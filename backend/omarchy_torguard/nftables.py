@@ -23,6 +23,7 @@ class FirewallContext:
     physical_interfaces: tuple[str, ...] = ()
     local_interfaces: tuple[str, ...] = ()
     lan_dns_links: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    tunnel_dns: tuple[str, ...] = ()
 
 
 def _interface(value: str) -> str:

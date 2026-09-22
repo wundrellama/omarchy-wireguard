@@ -46,13 +46,15 @@ class SystemTests(unittest.TestCase):
                 SystemFailure("no IPv6 route"),
             ("nft", "list", "table", "inet", "omarchy_torguard"):
                 "table inet omarchy_torguard { chain output { type filter hook output priority -10; policy drop; meta mark 0x6f7467; comment \"TorGuard fail closed\"; } }",
-            ("resolvectl", "status", "wg0"): "DNS Servers: 10.0.0.1\nDNS Domain: ~.\n",
+            ("resolvectl", "dns", "wg0"): "Link 7 (wg0): 10.0.0.1\n",
+            ("resolvectl", "domain", "wg0"): "Link 7 (wg0): ~.\n",
             ("resolvectl", "domain", "eth0"): "Link 2 (eth0): corp.example ~lan\n",
             ("resolvectl", "dns", "eth0"): "Link 2 (eth0): 192.168.1.1\n",
             ("wg", "show", "wg0", "latest-handshakes"): "peer\t950\n",
         }
         context = FirewallContext(physical_interfaces=("eth0",),
-                                  lan_dns_links=(("eth0", ("192.168.1.1",)),))
+                                  lan_dns_links=(("eth0", ("192.168.1.1",)),),
+                                  tunnel_dns=("10.0.0.1",))
         result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
                                                           firewall_context=context)
         self.assertTrue(result.ok)
@@ -125,6 +127,39 @@ class SystemTests(unittest.TestCase):
         HostSystem(runner).restore_lan_dns()
         self.assertEqual(runner.calls[-1][0],
                          ["resolvectl", "domain", "eth0", "corp.example", "~corp"])
+
+    def test_configures_tunnel_dns_from_nm_profile_with_fixed_order(self):
+        uuid = "00000000-0000-0000-0000-000000000001"
+        runner = FakeRunner({
+            ("nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid):
+                "1.1.1.1, 9.9.9.9\n",
+            ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid):
+                "2606:4700:4700::1111\n",
+            ("resolvectl", "dns", "otg-test", "1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"): "",
+            ("resolvectl", "domain", "otg-test", "~."): "",
+            ("resolvectl", "default-route", "otg-test", "yes"): "",
+        })
+        servers = HostSystem(runner).configure_tunnel_dns(uuid, "otg-test")
+        self.assertEqual(servers, ("1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"))
+        self.assertEqual([call[0][0] for call in runner.calls],
+                         ["nmcli", "nmcli", "resolvectl", "resolvectl", "resolvectl"])
+        self.assertEqual(runner.calls[2][0][:3], ["resolvectl", "dns", "otg-test"])
+
+    def test_rejects_invalid_or_missing_profile_dns_before_resolved_changes(self):
+        uuid = "00000000-0000-0000-0000-000000000001"
+        for ipv4 in ("", "1.1.1.1;evil"):
+            runner = FakeRunner({
+                ("nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid): ipv4,
+                ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid): "",
+            })
+            with self.assertRaises(SystemFailure):
+                HostSystem(runner).configure_tunnel_dns(uuid, "otg-test")
+            self.assertTrue(all(call[0][0] == "nmcli" for call in runner.calls))
+
+    def test_clears_only_tunnel_runtime_dns(self):
+        runner = FakeRunner({("resolvectl", "revert", "otg-test"): ""})
+        HostSystem(runner).clear_tunnel_dns("otg-test")
+        self.assertEqual(runner.calls[0][0], ["resolvectl", "revert", "otg-test"])
 
     def test_inspects_physical_lan_and_bridge_ports(self):
         runner = FakeRunner({

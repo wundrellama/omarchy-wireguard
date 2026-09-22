@@ -1,6 +1,7 @@
 import re
 import time
 import ipaddress
+from dataclasses import replace
 from typing import Any, Callable
 
 from .constants import CITY_BUDGET, MAX_RETRY, PAUSE_SECONDS, PROFILE_PREFIX, TORGUARD_FWMARK
@@ -319,6 +320,7 @@ class Controller:
                     local_interfaces=base.local_interfaces,
                     lan_dns_links=base.lan_dns_links), remaining())
                 interface = self.system.activate(profile["uuid"], remaining())
+                self.interface = interface
                 # Activation can cause NetworkManager to republish physical-link DNS.
                 # Reassert ~lan and rebuild the firewall from the refreshed resolvers.
                 base = self.system.configure_lan_dns(base, remaining())
@@ -332,6 +334,9 @@ class Controller:
                     local_interfaces=base.local_interfaces,
                     lan_dns_links=base.lan_dns_links)
                 self.system.apply_firewall(connected_context, remaining())
+                tunnel_dns = self.system.configure_tunnel_dns(
+                    profile["uuid"], interface, remaining())
+                connected_context = replace(connected_context, tunnel_dns=tunnel_dns)
                 self._wait_for_verification(profile["uuid"], interface, connected_context, remaining)
                 self.mode, self.current, self.interface = "connected", profile, interface
                 self.firewall_context = connected_context
@@ -385,6 +390,11 @@ class Controller:
         self._notify("failed", "TorGuard connection failed; traffic remains blocked")
 
     def _emergency_disconnect(self) -> None:
+        if self.interface:
+            try:
+                self.system.clear_tunnel_dns(self.interface)
+            except SystemFailure:
+                pass
         try:
             self.system.deactivate_managed()
         except SystemFailure:
@@ -396,6 +406,11 @@ class Controller:
         self._fail_closed()
 
     def _direct_disconnect(self) -> None:
+        if self.interface:
+            try:
+                self.system.clear_tunnel_dns(self.interface)
+            except SystemFailure:
+                pass
         try:
             self.system.deactivate_managed()
         finally:

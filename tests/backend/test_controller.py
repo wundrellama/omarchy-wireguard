@@ -44,6 +44,7 @@ class FakeSystem:
         self.deactivations = 0
         self.removals = 0
         self.dns_restores = 0
+        self.tunnel_dns_clears = 0
         self.fail_uuids = set()
         self.activations = []
         self.imported = []
@@ -71,6 +72,14 @@ class FakeSystem:
         resolver = f"192.168.1.{self.dns_configurations}"
         return replace(context, lan_resolvers=(resolver,),
                        lan_dns_links=(("eth0", (resolver,)),))
+
+    def configure_tunnel_dns(self, uuid, interface, timeout=10):
+        self.events.append("configure_tunnel_dns")
+        return ("1.1.1.1",)
+
+    def clear_tunnel_dns(self, interface, timeout=10):
+        self.events.append("clear_tunnel_dns")
+        self.tunnel_dns_clears += 1
 
     def deactivate_managed(self):
         self.deactivations += 1
@@ -137,8 +146,13 @@ class ControllerTests(unittest.TestCase):
         self.assertLess(dns_events[0], activation)
         self.assertGreater(dns_events[1], activation)
         self.assertEqual(self.controller.firewall_context.lan_resolvers, ("192.168.1.2",))
+        self.assertEqual(self.controller.firewall_context.tunnel_dns, ("1.1.1.1",))
         self.assertEqual(self.system.firewalls[-1].lan_resolvers, ("192.168.1.2",))
         self.assertIs(self.system.verified_contexts[-1], self.controller.firewall_context)
+        tunnel_dns = self.system.events.index("configure_tunnel_dns")
+        connected_firewall = max(index for index, event in enumerate(self.system.events)
+                                 if event == "firewall")
+        self.assertLess(connected_firewall, tunnel_dns)
 
     def test_transient_verification_failure_recovers_within_city_budget(self):
         transient = Verification(False, {"handshake_fresh": False}, "handshake not ready")
@@ -162,6 +176,7 @@ class ControllerTests(unittest.TestCase):
         self.assertLessEqual(self.system.verify_calls, 41)
         self.assertEqual(self.controller.last_checks, {"handshake_fresh": False})
         self.assertEqual(self.controller.last_error, "handshake still pending")
+        self.assertEqual(self.system.tunnel_dns_clears, 1)
 
     def test_failure_is_fail_closed_and_does_not_update_mru(self):
         self.system.fail_activate = True
@@ -209,6 +224,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(result["enabled"])
         self.assertEqual(self.system.removals, 1)
         self.assertEqual(self.system.dns_restores, 1)
+        self.assertEqual(self.system.tunnel_dns_clears, 1)
 
     def test_disabled_boot_removes_firewall_while_enabled_boot_fails_closed(self):
         self.controller.boot()

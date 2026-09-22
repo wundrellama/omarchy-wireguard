@@ -215,6 +215,39 @@ class HostSystem:
             dns_links.append((interface, addresses))
         return replace(context, lan_resolvers=tuple(sorted(resolvers)), lan_dns_links=tuple(dns_links))
 
+    def configure_tunnel_dns(self, uuid: str, interface: str,
+                             timeout: float = 10) -> tuple[str, ...]:
+        if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", uuid):
+            raise SystemFailure("invalid NetworkManager profile UUID")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", interface):
+            raise SystemFailure("invalid tunnel interface")
+        each = max(0.1, timeout / 5)
+        outputs = [
+            self.runner.run(["nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid], timeout=each),
+            self.runner.run(["nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid], timeout=each),
+        ]
+        servers = []
+        for output in outputs:
+            for token in re.split(r"[,\s]+", output.strip()):
+                if not token or token == "--":
+                    continue
+                try:
+                    servers.append(str(ipaddress.ip_address(token)))
+                except ValueError as exc:
+                    raise SystemFailure("NetworkManager profile contains invalid DNS") from exc
+        servers = sorted(set(servers))
+        if not servers:
+            raise SystemFailure("NetworkManager profile has no tunnel DNS")
+        self.runner.run(["resolvectl", "dns", interface, *servers], timeout=each)
+        self.runner.run(["resolvectl", "domain", interface, "~."], timeout=each)
+        self.runner.run(["resolvectl", "default-route", interface, "yes"], timeout=each)
+        return tuple(servers)
+
+    def clear_tunnel_dns(self, interface: str, timeout: float = 10) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", interface):
+            raise SystemFailure("invalid tunnel interface")
+        self.runner.run(["resolvectl", "revert", interface], timeout=timeout)
+
     def restore_lan_dns(self, timeout: float = 10) -> None:
         context = self.inspect_firewall_context(timeout)
         if not context.physical_interfaces:
@@ -229,7 +262,8 @@ class HostSystem:
                firewall_context: FirewallContext | None = None) -> Verification:
         now = now if now is not None else time.time()
         expected_dns = dict(firewall_context.lan_dns_links) if firewall_context else {}
-        each = max(0.1, timeout / (8 + len(expected_dns) * 2))
+        expected_tunnel_dns = firewall_context.tunnel_dns if firewall_context else ()
+        each = max(0.1, timeout / (9 + len(expected_dns) * 2))
         active = self.runner.run(["nmcli", "-g", "GENERAL.STATE,GENERAL.DEVICES", "connection", "show", "uuid", uuid], timeout=each)
         profile_ok = "activated" in active.lower() and interface in active
         mark_text = self.runner.run(["wg", "show", interface, "fwmark"], timeout=each).strip()
@@ -253,8 +287,11 @@ class HostSystem:
                        "TorGuard fail closed" in firewall and output_drop and mark_match is not None and
                        int(mark_match.group(1), 0) == TORGUARD_FWMARK)
         ipv6_blocked = firewall_ok
-        dns = self.runner.run(["resolvectl", "status", interface], timeout=each)
-        tunnel_dns = "DNS Servers:" in dns and ("~." in dns or "DefaultRoute setting: yes" in dns)
+        tunnel_servers = set(_resolved_addresses(
+            self.runner.run(["resolvectl", "dns", interface], timeout=each)))
+        tunnel_domains = _resolved_values(
+            self.runner.run(["resolvectl", "domain", interface], timeout=each))
+        tunnel_dns = bool(expected_tunnel_dns) and set(expected_tunnel_dns) <= tunnel_servers and "~." in tunnel_domains
         lan_split = bool(expected_dns)
         for physical, expected_resolvers in expected_dns.items():
             domains = _resolved_values(self.runner.run(["resolvectl", "domain", physical], timeout=each))
