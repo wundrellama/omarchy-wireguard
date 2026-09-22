@@ -48,8 +48,9 @@ class SystemTests(unittest.TestCase):
                 "table inet omarchy_wireguard { chain output { type filter hook output priority -10; policy drop; meta mark 0x6f7467; comment \"WireGuard fail closed\"; } }",
             ("resolvectl", "dns", "wg0"): "Link 7 (wg0): 10.0.0.1\n",
             ("resolvectl", "domain", "wg0"): "Link 7 (wg0): ~.\n",
-            ("resolvectl", "domain", "eth0"): "Link 2 (eth0): corp.example ~lan\n",
+            ("resolvectl", "domain", "eth0"): "Link 2 (eth0): ~lan\n",
             ("resolvectl", "dns", "eth0"): "Link 2 (eth0): 192.168.1.1\n",
+            ("resolvectl", "default-route", "eth0"): "Link 2 (eth0): no\n",
             ("wg", "show", "wg0", "latest-handshakes"): "peer\t950\n",
         }
         context = FirewallContext(physical_interfaces=("eth0",),
@@ -83,6 +84,20 @@ class SystemTests(unittest.TestCase):
                                                           firewall_context=context)
         self.assertFalse(result.checks["firewall_policy"])
 
+        responses[("nft", "list", "table", "inet", "omarchy_wireguard")] = (
+            "table inet omarchy_wireguard { chain output { type filter hook output priority -10; "
+            "policy drop; meta mark 0x6f7467; comment \"WireGuard fail closed\"; } }")
+        responses[("resolvectl", "domain", "eth0")] = "Link 2 (eth0): ~. ~lan\n"
+        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
+                                                          firewall_context=context)
+        self.assertFalse(result.checks["split_dns"])
+
+        responses[("resolvectl", "domain", "eth0")] = "Link 2 (eth0): ~lan\n"
+        responses[("resolvectl", "dns", "eth0")] = "Link 2 (eth0): 192.168.1.1 192.168.1.2\n"
+        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
+                                                          firewall_context=context)
+        self.assertFalse(result.checks["split_dns"])
+
     def test_only_prefixed_profiles_are_managed(self):
         runner = FakeRunner({
             ("nmcli", "-t", "-f", "NAME,UUID", "connection", "show"):
@@ -104,29 +119,31 @@ class SystemTests(unittest.TestCase):
 
     def test_configures_lan_split_dns_and_discovers_resolvers(self):
         runner = FakeRunner({
-            ("resolvectl", "domain", "eth0"): "Link 2 (eth0): corp.example ~corp\n",
-            ("resolvectl", "domain", "eth0", "corp.example", "~corp", "~lan"): "",
+            ("resolvectl", "domain", "eth0", "~lan"): "",
+            ("resolvectl", "default-route", "eth0", "no"): "",
             ("resolvectl", "dns", "eth0"): "Link 2 (eth0): 192.168.1.1 2001:db8::53\n",
         })
         context = HostSystem(runner).configure_lan_dns(FirewallContext(physical_interfaces=("eth0",)))
         self.assertEqual(set(context.lan_resolvers), {"192.168.1.1", "2001:db8::53"})
         self.assertEqual(context.lan_dns_links,
-                         (("eth0", ("192.168.1.1", "2001:db8::53")),))
+                          (("eth0", ("192.168.1.1", "2001:db8::53")),))
 
-    def test_restores_physical_dns_for_direct_mode(self):
+    def test_captures_and_restores_physical_dns_for_direct_mode(self):
         runner = FakeRunner({
-            ("ip", "-json", "route", "show", "table", "main"):
-                json.dumps([{"dst": "default", "dev": "eth0"}]),
-            ("ip", "-6", "-json", "route", "show", "table", "main"): "[]",
-            ("ip", "-json", "link", "show"): json.dumps([
-                {"ifindex": 2, "ifname": "eth0", "linkinfo": {"info_kind": "ether"}},
-            ]),
-            ("resolvectl", "domain", "eth0"): "Link 2 (eth0): corp.example ~lan ~corp\n",
-            ("resolvectl", "domain", "eth0", "corp.example", "~corp"): "",
+            ("resolvectl", "domain", "eth0"): "Link 2 (eth0): corp.example ~.\n",
+            ("resolvectl", "default-route", "eth0"): "Link 2 (eth0): yes\n",
+            ("ip", "-json", "link", "show"): json.dumps([{"ifname": "eth0"}]),
+            ("resolvectl", "domain", "eth0", "corp.example", "~."): "",
+            ("resolvectl", "default-route", "eth0", "yes"): "",
         })
-        HostSystem(runner).restore_lan_dns()
+        system = HostSystem(runner)
+        state = system.capture_lan_dns(("eth0",))
+        self.assertEqual(state, (("eth0", ("corp.example", "~."), True),))
+        system.restore_lan_dns(state)
+        self.assertEqual(runner.calls[-2][0],
+                         ["resolvectl", "domain", "eth0", "corp.example", "~."])
         self.assertEqual(runner.calls[-1][0],
-                         ["resolvectl", "domain", "eth0", "corp.example", "~corp"])
+                         ["resolvectl", "default-route", "eth0", "yes"])
 
     def test_configures_tunnel_dns_from_nm_profile_with_fixed_order(self):
         uuid = "00000000-0000-0000-0000-000000000001"

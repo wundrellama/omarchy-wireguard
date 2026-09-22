@@ -8,7 +8,7 @@ from .constants import CITY_BUDGET, MAX_RETRY, PAUSE_SECONDS, PROFILE_PREFIX, WI
 from .importer import ImportFailure, decode_payload, parse_profiles
 from .nftables import FirewallContext
 from .storage import StateStore
-from .system import HostSystem, SystemFailure
+from .system import DnsRestoreState, HostSystem, SystemFailure
 
 
 class RequestFailure(ValueError):
@@ -18,6 +18,23 @@ class RequestFailure(ValueError):
 def _slug(value: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return value[:32] or "profile"
+
+
+def _dns_restore_state(value: object) -> DnsRestoreState:
+    if not isinstance(value, (list, tuple)) or len(value) > 16:
+        raise RequestFailure("invalid persisted DNS restore state")
+    state = []
+    for item in value:
+        if (not isinstance(item, (list, tuple)) or len(item) != 3 or
+                not isinstance(item[0], str) or
+                not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", item[0]) or
+                not isinstance(item[1], (list, tuple)) or len(item[1]) > 32 or
+                not all(isinstance(domain, str) and 0 < len(domain) <= 255 and
+                        "\n" not in domain and "\r" not in domain for domain in item[1]) or
+                not isinstance(item[2], bool)):
+            raise RequestFailure("invalid persisted DNS restore state")
+        state.append((item[0], tuple(item[1]), item[2]))
+    return tuple(state)
 
 
 def network_context(policy: object, base: FirewallContext) -> FirewallContext:
@@ -80,6 +97,7 @@ class Controller:
         # Validate persisted policy before any firewall is generated.
         network_context(self.network_policy, FirewallContext())
         self.catalog: list[dict[str, Any]] = store.read("profiles.json", [])
+        self.dns_restore = _dns_restore_state(store.read("dns.json", []))
         persisted = store.read("state.json", None)
         if persisted is None:
             persisted = {"enabled": False, "target": None, "mru": []}
@@ -111,6 +129,7 @@ class Controller:
             self._attempt()
         else:
             self._direct_disconnect()
+            self._clear_dns_restore()
 
     def handle(self, operation: str, args: dict[str, Any]) -> dict[str, Any]:
         handlers = {
@@ -220,10 +239,17 @@ class Controller:
 
     def disconnect(self, args: dict) -> dict:
         self._none(args)
+        try:
+            self._direct_disconnect()
+        except SystemFailure as exc:
+            self.mode, self.last_error = "failed", str(exc)
+            self.retry_at = None
+            self._persist()
+            raise
         self.enabled, self.target, self.mode = False, None, "disabled"
         self.retry_at = self.pause_until = None
         self._persist()
-        self._direct_disconnect()
+        self._clear_dns_restore()
         return self.status({})
 
     def retry(self, args: dict) -> dict:
@@ -242,9 +268,16 @@ class Controller:
             raise RequestFailure("pause must be between 1 and 600 seconds")
         if not self.enabled:
             raise RequestFailure("cannot pause a disabled connection")
+        try:
+            self._direct_disconnect()
+        except SystemFailure as exc:
+            self.mode, self.last_error = "failed", str(exc)
+            self.retry_at = None
+            self._persist()
+            raise
+        self._clear_dns_restore()
         self.mode, self.pause_until, self.retry_at = "paused", self.clock() + seconds, None
         self._persist()
-        self._direct_disconnect()
         return self.status({})
 
     def diagnostics(self, args: dict) -> dict:
@@ -305,7 +338,7 @@ class Controller:
                 break
             try:
                 base = network_context(self.network_policy, self.system.inspect_firewall_context(remaining()))
-                base = self.system.configure_lan_dns(base, remaining())
+                base = self._configure_lan_dns(base, remaining)
                 # Permit only resolved's physical-link DNS before resolving a hostname;
                 # all application traffic remains blocked during this transition.
                 self.system.apply_firewall(base, remaining())
@@ -323,7 +356,9 @@ class Controller:
                 self.interface = interface
                 # Activation can cause NetworkManager to republish physical-link DNS.
                 # Reassert ~lan and rebuild the firewall from the refreshed resolvers.
-                base = self.system.configure_lan_dns(base, remaining())
+                refreshed = network_context(
+                    self.network_policy, self.system.inspect_firewall_context(remaining()))
+                base = self._configure_lan_dns(refreshed, remaining)
                 connected_context = FirewallContext(
                     tunnel_interface=interface, endpoints=endpoints,
                     wireguard_fwmark=WIREGUARD_FWMARK, lan_prefixes=base.lan_prefixes,
@@ -411,16 +446,33 @@ class Controller:
                 self.system.clear_tunnel_dns(self.interface)
             except SystemFailure:
                 pass
-        try:
-            self.system.deactivate_managed()
-        finally:
-            self.current = None
-            self.interface = None
-            self.firewall_context = None
-            try:
-                self.system.restore_lan_dns()
-            finally:
-                self.system.remove_firewall()
+        self.system.deactivate_managed()
+        self.current = None
+        self.interface = None
+        self.firewall_context = None
+        self.system.restore_lan_dns(self.dns_restore)
+        self.system.remove_firewall()
+
+    def _configure_lan_dns(self, base: FirewallContext,
+                           remaining: Callable[[], float]) -> FirewallContext:
+        physical = set(base.physical_interfaces)
+        stale = tuple(item for item in self.dns_restore if item[0] not in physical)
+        if stale:
+            self.system.restore_lan_dns(stale, remaining())
+        retained = tuple(item for item in self.dns_restore if item[0] in physical)
+        known = {interface for interface, _domains, _default in retained}
+        missing = tuple(interface for interface in base.physical_interfaces if interface not in known)
+        updated = retained + self.system.capture_lan_dns(missing, remaining())
+        if len(updated) > 16:
+            raise SystemFailure("too many physical DNS links")
+        if updated != self.dns_restore:
+            self.dns_restore = updated
+            self.store.write("dns.json", self.dns_restore)
+        return self.system.configure_lan_dns(base, remaining())
+
+    def _clear_dns_restore(self) -> None:
+        self.dns_restore = ()
+        self.store.write("dns.json", [])
 
     def _fail_closed(self) -> None:
         base = self.system.inspect_firewall_context()

@@ -27,6 +27,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var locations: service.filteredLocations
   readonly property bool firstRowDisconnects: locations.length > 0 && Model.shouldDisconnectLocation(locations[0], service.status.state)
+  readonly property string statusCountryCode: Model.statusCountryCode(service.status)
+  readonly property bool showCountryFlag: service.status.state !== "disabled" && statusCountryCode !== ""
   readonly property color stateColor: {
     if (service.status.state === "connected") return success
     if (service.status.state === "connecting") return warning
@@ -161,13 +163,32 @@ Panel {
     tooltipText: Model.tooltip(service.status)
     iconComponent: Component {
       Item {
+        Text {
+          visible: root.showCountryFlag
+          anchors.centerIn: parent
+          text: Model.countryFlag(root.statusCountryCode)
+          font.family: root.fontFamily
+          font.pixelSize: Style.bar.iconFont
+        }
         Rectangle {
+          visible: !root.showCountryFlag
           anchors.centerIn: parent
           width: Style.space(7)
           height: width
           radius: width / 2
           color: service.status.state === "disabled" || service.status.state === "paused" ? "transparent" : root.stateColor
           border.width: service.status.state === "disabled" || service.status.state === "paused" ? Math.max(1, Style.space(1)) : 0
+          border.color: root.stateColor
+        }
+        Rectangle {
+          visible: root.showCountryFlag
+          anchors.top: parent.top
+          anchors.right: parent.right
+          width: Style.space(6)
+          height: width
+          radius: width / 2
+          color: service.status.state === "paused" ? "transparent" : root.stateColor
+          border.width: service.status.state === "paused" ? Math.max(1, Style.space(1)) : 0
           border.color: root.stateColor
         }
       }
@@ -265,7 +286,7 @@ Panel {
           }
 
           Column {
-            visible: service.status.errors && service.status.errors.length > 0
+            visible: Array.isArray(service.status.errors) && service.status.errors.length > 0
             width: parent.width
             spacing: Style.space(5)
             PanelSectionHeader { text: "ERRORS"; foreground: root.errorColor; fontFamily: root.fontFamily }

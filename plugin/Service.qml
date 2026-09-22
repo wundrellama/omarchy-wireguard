@@ -23,6 +23,8 @@ Item {
   property string previousState: ""
   property bool previousPaused: false
   property bool sawFirstStatus: false
+  property bool failureNotificationShown: false
+  property bool handshakeFailureConfirmationPending: false
   property string pendingAction: ""
   property string pickerMode: ""
   property bool replaceImport: false
@@ -121,19 +123,42 @@ Item {
       lastError = next.message + (next.reason ? ": " + next.reason : "")
       return
     }
-    if (sawFirstStatus && !next.backendNotifies) {
-      if (next.state === "failed" && previousState !== "failed") notify("WireGuard connection failed", next.reason, "critical")
-      else if (next.state === "connected" && previousState === "failed") notify("WireGuard recovered", next.location, "normal")
-      if (previousPaused && !next.paused) notify("WireGuard pause expired", "VPN protection resumed", "normal")
-    }
-    previousState = next.state
-    previousPaused = next.paused
-    sawFirstStatus = true
     var merged = Model.mergeStatusCatalog(next, catalog)
     if (status.importReview && status.importReview.ambiguous
         && (!merged.importReview || !merged.importReview.ambiguous)) {
       merged.importReview = status.importReview
     }
+    if (sawFirstStatus && !next.backendNotifies) {
+      if (merged.state === "failed") {
+        if (Model.isHandshakeOnlyFailure(merged)) {
+          if (previousState !== "failed" && !failureNotificationShown)
+            handshakeFailureNotificationDelay.restart()
+          if (handshakeFailureConfirmationPending) {
+            handshakeFailureConfirmationPending = false
+            failureNotificationShown = true
+            notify("WireGuard connection failed", merged.reason, "critical")
+          }
+        } else {
+          handshakeFailureNotificationDelay.stop()
+          handshakeFailureConfirmationPending = false
+          if (!failureNotificationShown) {
+            failureNotificationShown = true
+            notify("WireGuard connection failed", merged.reason, "critical")
+          }
+        }
+      } else {
+        handshakeFailureNotificationDelay.stop()
+        handshakeFailureConfirmationPending = false
+        if (merged.state === "connected" && failureNotificationShown)
+          notify("WireGuard recovered", merged.location, "normal")
+        if (merged.state === "connected" || merged.state === "disabled" || merged.state === "paused")
+          failureNotificationShown = false
+      }
+      if (previousPaused && !merged.paused) notify("WireGuard pause expired", "VPN protection resumed", "normal")
+    }
+    previousState = merged.state
+    previousPaused = merged.paused
+    sawFirstStatus = true
     status = merged
     lastError = ""
   }
@@ -208,6 +233,16 @@ Item {
     interval: 500
     repeat: false
     onTriggered: root.refresh()
+  }
+
+  Timer {
+    id: handshakeFailureNotificationDelay
+    interval: 15000
+    repeat: false
+    onTriggered: {
+      root.handshakeFailureConfirmationPending = true
+      root.refresh()
+    }
   }
 
   Process {

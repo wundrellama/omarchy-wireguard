@@ -8,7 +8,7 @@ import socket
 from pathlib import Path
 
 from .constants import SOCKET_PATH, STATE_DIR
-from .controller import Controller, RequestFailure, network_context
+from .controller import Controller, RequestFailure, _dns_restore_state, network_context
 from .protocol import ProtocolError, authorized, peer_credentials, read_request, send_response
 from .storage import StateStore
 from .system import HostSystem, SystemFailure
@@ -104,14 +104,21 @@ def fail_closed(state_dir: Path = STATE_DIR) -> None:
 def reconcile_early_firewall(store: StateStore, system: HostSystem) -> None:
     try:
         state = store.read("state.json", None)
+        dns_restore = _dns_restore_state(store.read("dns.json", []))
         if state is None:
-            system.remove_firewall()
+            if dns_restore:
+                system.apply_firewall(system.inspect_firewall_context())
+            else:
+                system.remove_firewall()
             return
         if (not isinstance(state, dict) or not isinstance(state.get("enabled"), bool) or
                 (state["enabled"] and not isinstance(state.get("target"), str))):
             raise ValueError("invalid state")
         if not state["enabled"]:
-            system.remove_firewall()
+            if dns_restore:
+                system.apply_firewall(system.inspect_firewall_context())
+            else:
+                system.remove_firewall()
             return
         policy = store.read("network.json", {})
         system.apply_firewall(network_context(policy, system.inspect_firewall_context()))

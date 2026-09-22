@@ -7,15 +7,18 @@ from omarchy_wireguard.protocol import ProtocolError
 
 
 class Store:
-    def __init__(self, state=None, error=None):
+    def __init__(self, state=None, error=None, dns=None):
         self.state = state
         self.error = error
+        self.dns = dns or []
 
     def read(self, name, default):
         if self.error and name == "state.json":
             raise self.error
         if name == "state.json":
             return self.state
+        if name == "dns.json":
+            return self.dns
         return {}
 
 
@@ -44,6 +47,18 @@ class EarlyFirewallTests(unittest.TestCase):
     def test_enabled_state_fails_closed(self):
         system = System()
         reconcile_early_firewall(Store({"enabled": True, "target": "Japan/Tokyo", "mru": []}), system)
+        self.assertEqual((system.removed, system.applied), (0, 1))
+
+    def test_disabled_state_with_pending_dns_restore_fails_closed(self):
+        system = System()
+        store = Store({"enabled": False, "target": None, "mru": []},
+                      dns=[["eth0", ["~."], True]])
+        reconcile_early_firewall(store, system)
+        self.assertEqual((system.removed, system.applied), (0, 1))
+
+    def test_missing_state_with_pending_dns_restore_fails_closed(self):
+        system = System()
+        reconcile_early_firewall(Store(dns=[["eth0", ["~."], True]]), system)
         self.assertEqual((system.removed, system.applied), (0, 1))
 
     def test_corrupt_or_unsafe_state_fails_closed(self):

@@ -26,6 +26,9 @@ class Verification:
     detail: str
 
 
+DnsRestoreState = tuple[tuple[str, tuple[str, ...], bool], ...]
+
+
 class CommandRunner:
     def run(self, argv: list[str], *, stdin: str | None = None, timeout: float = 10) -> str:
         try:
@@ -200,6 +203,27 @@ class HostSystem:
         return FirewallContext(lan_prefixes=tuple(sorted(lan)), physical_interfaces=tuple(sorted(physical)),
                                local_interfaces=local, resolver_uid=resolver_uid)
 
+    def capture_lan_dns(self, interfaces: tuple[str, ...], timeout: float = 10) -> DnsRestoreState:
+        if not interfaces:
+            return ()
+        if len(interfaces) > 16:
+            raise SystemFailure("too many physical DNS links")
+        each = max(0.1, timeout / (len(interfaces) * 2))
+        state = []
+        for interface in interfaces:
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", interface):
+                raise SystemFailure("invalid physical interface")
+            domains = _resolved_values(
+                self.runner.run(["resolvectl", "domain", interface], timeout=each))
+            if len(domains) > 32 or any(len(domain) > 255 for domain in domains):
+                raise SystemFailure("physical DNS domain state is too large")
+            default_route = _resolved_default_route(
+                self.runner.run(["resolvectl", "default-route", interface], timeout=each))
+            if default_route is None:
+                raise SystemFailure("resolved returned invalid default-route state")
+            state.append((interface, domains, default_route))
+        return tuple(state)
+
     def configure_lan_dns(self, context: FirewallContext, timeout: float = 10) -> FirewallContext:
         if not context.physical_interfaces:
             return context
@@ -207,9 +231,8 @@ class HostSystem:
         resolvers = set(context.lan_resolvers)
         dns_links = []
         for interface in context.physical_interfaces:
-            domains = _resolved_values(self.runner.run(["resolvectl", "domain", interface], timeout=each))
-            updated = tuple(dict.fromkeys((*domains, "~lan")))
-            self.runner.run(["resolvectl", "domain", interface, *updated], timeout=each)
+            self.runner.run(["resolvectl", "domain", interface, "~lan"], timeout=each)
+            self.runner.run(["resolvectl", "default-route", interface, "no"], timeout=each)
             addresses = _resolved_addresses(self.runner.run(["resolvectl", "dns", interface], timeout=each))
             resolvers.update(addresses)
             dns_links.append((interface, addresses))
@@ -248,22 +271,34 @@ class HostSystem:
             raise SystemFailure("invalid tunnel interface")
         self.runner.run(["resolvectl", "revert", interface], timeout=timeout)
 
-    def restore_lan_dns(self, timeout: float = 10) -> None:
-        context = self.inspect_firewall_context(timeout)
-        if not context.physical_interfaces:
+    def restore_lan_dns(self, state: DnsRestoreState, timeout: float = 10) -> None:
+        if not state:
             return
-        each = max(0.1, timeout / (len(context.physical_interfaces) * 2))
-        for interface in context.physical_interfaces:
-            domains = tuple(value for value in _resolved_values(
-                self.runner.run(["resolvectl", "domain", interface], timeout=each)) if value != "~lan")
-            self.runner.run(["resolvectl", "domain", interface, *(domains or ("",))], timeout=each)
+        links = json.loads(self.runner.run(["ip", "-json", "link", "show"], timeout=timeout))
+        existing = {link.get("ifname") for link in links}
+        active = [item for item in state if item[0] in existing]
+        if not active:
+            return
+        each = max(0.1, timeout / (len(active) * 2))
+        failed = False
+        for interface, domains, default_route in active:
+            for command in (
+                    ["resolvectl", "domain", interface, *(domains or ("",))],
+                    ["resolvectl", "default-route", interface,
+                     "yes" if default_route else "no"]):
+                try:
+                    self.runner.run(command, timeout=each)
+                except SystemFailure:
+                    failed = True
+        if failed:
+            raise SystemFailure("could not restore physical DNS settings")
 
     def verify(self, uuid: str, interface: str, now: float | None = None, timeout: float = 10,
                firewall_context: FirewallContext | None = None) -> Verification:
         now = now if now is not None else time.time()
         expected_dns = dict(firewall_context.lan_dns_links) if firewall_context else {}
         expected_tunnel_dns = firewall_context.tunnel_dns if firewall_context else ()
-        each = max(0.1, timeout / (9 + len(expected_dns) * 2))
+        each = max(0.1, timeout / (9 + len(expected_dns) * 3))
         active = self.runner.run(["nmcli", "-g", "GENERAL.STATE,GENERAL.DEVICES", "connection", "show", "uuid", uuid], timeout=each)
         profile_ok = "activated" in active.lower() and interface in active
         mark_text = self.runner.run(["wg", "show", interface, "fwmark"], timeout=each).strip()
@@ -297,7 +332,10 @@ class HostSystem:
             domains = _resolved_values(self.runner.run(["resolvectl", "domain", physical], timeout=each))
             resolvers = set(_resolved_addresses(
                 self.runner.run(["resolvectl", "dns", physical], timeout=each)))
-            lan_split = lan_split and "~lan" in domains and bool(expected_resolvers) and set(expected_resolvers) <= resolvers
+            default_route = _resolved_default_route(
+                self.runner.run(["resolvectl", "default-route", physical], timeout=each))
+            lan_split = (lan_split and domains == ("~lan",) and default_route is False and
+                         bool(expected_resolvers) and set(expected_resolvers) == resolvers)
         if firewall_context:
             discovered = {resolver for _physical, resolvers in expected_dns.items() for resolver in resolvers}
             lan_split = lan_split and set(firewall_context.lan_resolvers) <= discovered
@@ -337,3 +375,10 @@ def _resolved_addresses(output: str) -> tuple[str, ...]:
         except ValueError:
             continue
     return tuple(sorted(set(result)))
+
+
+def _resolved_default_route(output: str) -> bool | None:
+    values = _resolved_values(output)
+    if len(values) != 1 or values[0].lower() not in {"yes", "no"}:
+        return None
+    return values[0].lower() == "yes"

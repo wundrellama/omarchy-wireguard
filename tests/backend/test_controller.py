@@ -51,6 +51,10 @@ class FakeSystem:
         self.events = []
         self.dns_configurations = 0
         self.verified_contexts = []
+        self.dns_captures = 0
+        self.restored_dns = []
+        self.fail_dns_restore = False
+        self.fail_deactivate = False
 
     def inspect_firewall_context(self, timeout=10):
         return FirewallContext(lan_prefixes=("192.168.1.0/24",), physical_interfaces=("eth0",),
@@ -63,8 +67,17 @@ class FakeSystem:
     def remove_firewall(self, timeout=10):
         self.removals += 1
 
-    def restore_lan_dns(self, timeout=10):
+    def capture_lan_dns(self, interfaces, timeout=10):
+        if not interfaces:
+            return ()
+        self.dns_captures += 1
+        return tuple((interface, ("~.",), True) for interface in interfaces)
+
+    def restore_lan_dns(self, state, timeout=10):
         self.dns_restores += 1
+        self.restored_dns.append(state)
+        if self.fail_dns_restore:
+            raise SystemFailure("DNS restore failed")
 
     def configure_lan_dns(self, context, timeout=10):
         self.events.append("configure_lan_dns")
@@ -83,6 +96,8 @@ class FakeSystem:
 
     def deactivate_managed(self):
         self.deactivations += 1
+        if self.fail_deactivate:
+            raise SystemFailure("deactivation failed")
 
     def resolve_endpoint(self, host, port, timeout=10):
         return ((host, port),)
@@ -147,6 +162,8 @@ class ControllerTests(unittest.TestCase):
         self.assertGreater(dns_events[1], activation)
         self.assertEqual(self.controller.firewall_context.lan_resolvers, ("192.168.1.2",))
         self.assertEqual(self.controller.firewall_context.tunnel_dns, ("1.1.1.1",))
+        self.assertEqual(self.system.dns_captures, 1)
+        self.assertEqual(self.store.values["dns.json"], (("eth0", ("~.",), True),))
         self.assertEqual(self.system.firewalls[-1].lan_resolvers, ("192.168.1.2",))
         self.assertIs(self.system.verified_contexts[-1], self.controller.firewall_context)
         tunnel_dns = self.system.events.index("configure_tunnel_dns")
@@ -216,6 +233,22 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(rebooted.mode, "connecting")
         self.assertIsNone(rebooted.pause_until)
 
+    def test_pause_clears_dns_snapshot_before_accepting_direct_dns_changes(self):
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        self.controller.pause({"seconds": 10})
+        self.assertEqual(self.store.values["dns.json"], [])
+
+    def test_disconnect_keeps_fail_closed_policy_when_deactivation_fails(self):
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        self.system.fail_deactivate = True
+        with self.assertRaises(SystemFailure):
+            self.controller.disconnect({})
+        self.assertTrue(self.controller.enabled)
+        self.assertEqual(self.controller.mode, "failed")
+        self.assertEqual(self.system.removals, 0)
+
     def test_disconnect_preserves_unrelated_networks_by_api_contract(self):
         self.controller.connect({"city": "Japan/Tokyo"})
         self.controller.tick()
@@ -225,10 +258,30 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.system.removals, 1)
         self.assertEqual(self.system.dns_restores, 1)
         self.assertEqual(self.system.tunnel_dns_clears, 1)
+        self.assertEqual(self.system.restored_dns[-1], (("eth0", ("~.",), True),))
+        self.assertEqual(self.store.values["dns.json"], [])
+
+    def test_disconnect_keeps_fail_closed_policy_when_dns_restore_fails(self):
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        self.system.fail_dns_restore = True
+        with self.assertRaises(SystemFailure):
+            self.controller.disconnect({})
+        self.assertTrue(self.controller.enabled)
+        self.assertEqual(self.controller.mode, "failed")
+        self.assertEqual(self.system.removals, 0)
+        self.assertTrue(self.store.values["state.json"]["enabled"])
+        self.assertNotEqual(self.store.values["dns.json"], [])
 
     def test_disabled_boot_removes_firewall_while_enabled_boot_fails_closed(self):
-        self.controller.boot()
-        self.assertEqual(self.system.removals, 1)
+        disabled_store = MemoryStore({"profiles.json": [dict(PROFILE)],
+                                      "dns.json": [["eth0", ["~."], True]]})
+        disabled_system = FakeSystem()
+        Controller(disabled_store, disabled_system, clock=lambda: self.now,
+                   monotonic=lambda: self.now).boot()
+        self.assertEqual(disabled_system.removals, 1)
+        self.assertEqual(disabled_system.restored_dns[-1], (("eth0", ("~.",), True),))
+        self.assertEqual(disabled_store.values["dns.json"], [])
         enabled_store = MemoryStore({"profiles.json": [dict(PROFILE)],
                                      "state.json": {"enabled": True, "target": "Japan/Tokyo", "mru": []}})
         enabled_system = FakeSystem()
@@ -239,6 +292,10 @@ class ControllerTests(unittest.TestCase):
 
     def test_controller_rejects_malformed_existing_state(self):
         store = MemoryStore({"profiles.json": [dict(PROFILE)], "state.json": {}})
+        with self.assertRaises(RequestFailure):
+            Controller(store, FakeSystem())
+        store = MemoryStore({"profiles.json": [dict(PROFILE)],
+                             "dns.json": [["eth0;evil", ["~."], True]]})
         with self.assertRaises(RequestFailure):
             Controller(store, FakeSystem())
 

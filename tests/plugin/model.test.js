@@ -36,6 +36,23 @@ vm.runInContext(source, model)
   assert.equal(model.countryFlag(""), "--")
   assert.equal(model.countryFlag("JPN"), "JPN")
   assert.equal(Array.from(model.countryFlag("jp")).length, 2)
+  assert.equal(model.statusCountryCode({ state: "connected", locations: [
+    { countryCode: "FR", current: true },
+    { countryCode: "JP", target: true }
+  ] }), "FR")
+  assert.equal(model.statusCountryCode({ state: "connecting", locations: [
+    { countryCode: "FR", current: true },
+    { countryCode: "JP", target: true }
+  ] }), "JP")
+  assert.equal(model.statusCountryCode({ state: "paused", locations: [
+    { countryCode: "JP", target: true }
+  ] }), "JP")
+  assert.equal(model.statusCountryCode({ state: "disabled", locations: [
+    { countryCode: "JP", target: true }
+  ] }), "")
+  assert.equal(model.isHandshakeOnlyFailure({ state: "failed", reason: "failed: handshake_fresh" }), true)
+  assert.equal(model.isHandshakeOnlyFailure({ state: "failed", reason: "failed: handshake_fresh, split_dns" }), false)
+  assert.equal(model.isHandshakeOnlyFailure({ state: "connected", reason: "failed: handshake_fresh" }), false)
 }
 
 {

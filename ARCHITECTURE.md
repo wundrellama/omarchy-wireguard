@@ -105,9 +105,10 @@ The services have distinct roles:
   firewall service and NetworkManager, enriches the firewall with discovered
   host context, and attempts the selected connection.
 
-At early boot, missing or valid disabled state permits direct networking. Valid
-enabled state installs a fail-closed policy. Malformed, unreadable, or unsafe
-state is treated as enabled so corruption cannot silently open the network.
+At early boot, missing or valid disabled state permits direct networking unless
+a physical DNS restoration is still pending. Pending restoration, valid enabled
+state, and malformed, unreadable, or unsafe state install a fail-closed policy
+so corruption or an interrupted disconnect cannot silently open the network.
 
 The nftables table remains in the kernel if the controller crashes. The daemon
 uses `Restart=on-failure`, but safety does not depend on a successful restart.
@@ -145,6 +146,7 @@ Root-owned state is stored below `/var/lib/omarchy-wireguard`:
 | `state.json` | Enabled intent, target city, and profile most-recently-used order |
 | `profiles.json` | Non-secret profile metadata and NetworkManager UUIDs |
 | `network.json` | LAN resolvers and validated `alfred-vpn` exceptions |
+| `dns.json` | Original physical-link DNS domains and default-route state while protection is enabled |
 | `notification.json` | Latest privacy-safe backend notification |
 
 The directory is mode `0700`. Files are written through mode-`0600` temporary
@@ -200,14 +202,16 @@ Connecting is deliberately ordered to avoid a temporary direct path:
 2. Deactivate all managed profiles.
 3. Discover physical default-route interfaces, directly connected LAN routes,
    bridge topology, and physical-link DNS state.
-4. Add `~lan` to physical links and install the fail-closed firewall.
-5. Resolve the selected WireGuard endpoint while only approved resolver traffic
+4. Persist the original physical-link DNS domains and default-route settings.
+5. Replace physical-link route domains with only `~lan`, set their DNS
+   default-route status to `no`, and install the fail-closed firewall.
+6. Resolve the selected WireGuard endpoint while only approved resolver traffic
    is allowed on the underlay.
-6. Replace the firewall with exact endpoint IP and UDP-port exceptions.
-7. Activate the NetworkManager WireGuard profile.
-8. Reassert tunnel and physical-link DNS because activation may republish DNS.
-9. Replace the firewall with the active tunnel interface included.
-10. Poll all connection checks until they pass or the attempt budget expires.
+7. Replace the firewall with exact endpoint IP and UDP-port exceptions.
+8. Activate the NetworkManager WireGuard profile.
+9. Reassert tunnel and physical-link DNS because activation may republish DNS.
+10. Replace the firewall with the active tunnel interface included.
+11. Poll all connection checks until they pass or the attempt budget expires.
 
 If verification fails, the controller deactivates managed profiles, restores a
 fail-closed firewall without tunnel allowances, enters `failed`, and schedules
@@ -241,13 +245,16 @@ The DNS policy uses systemd-resolved route domains:
 
 - The active WireGuard interface receives the profile's literal DNS servers,
   `~.`, and default-route status. It is therefore preferred for general DNS.
-- Physical links retain their existing DNS servers and receive `~lan`, keeping
-  local names on the LAN resolver.
+- Physical links retain their existing DNS servers but receive only `~lan` and
+  `DefaultRoute=no`, keeping local names on the LAN resolver without competing
+  with the tunnel for general queries.
 - The firewall allows the `systemd-resolve` service user to contact only the
   discovered, exact physical-link resolver addresses on TCP/UDP port 53.
 
-On disconnect or pause, tunnel DNS is reverted and only the `~lan` domains
-added by this plugin are removed. Existing physical-link domains are preserved.
+Before changing a physical link, the backend persists its original domains and
+default-route value. Retries and daemon restarts retain that snapshot. On
+disconnect, pause, disabled boot, or emergency disable, tunnel DNS is reverted
+and the exact physical-link snapshot is restored before it is cleared.
 
 ## Kill-switch architecture
 

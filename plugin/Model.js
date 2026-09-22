@@ -222,6 +222,28 @@ function countryFlag(code) {
   return String.fromCodePoint(0x1f1e6 + value.charCodeAt(0) - 65, 0x1f1e6 + value.charCodeAt(1) - 65)
 }
 
+function statusCountryCode(status) {
+  var value = object(status)
+  if (text(value.state) === "disabled") return ""
+  var locations = Array.isArray(value.locations) ? value.locations : []
+  var preferCurrent = text(value.state) === "connected"
+  for (var pass = 0; pass < 2; pass++) {
+    for (var i = 0; i < locations.length; i++) {
+      var selected = preferCurrent ? locations[i].current === true : locations[i].target === true
+      var code = text(locations[i].countryCode).toUpperCase()
+      if (selected && code) return code
+    }
+    preferCurrent = !preferCurrent
+  }
+  return ""
+}
+
+function isHandshakeOnlyFailure(status) {
+  var value = object(status)
+  return text(value.state) === "failed"
+    && text(value.reason).trim().toLowerCase() === "failed: handshake_fresh"
+}
+
 function countdownText(seconds) {
   var total = Math.max(0, Math.floor(Number(seconds) || 0))
   if (!total) return ""
