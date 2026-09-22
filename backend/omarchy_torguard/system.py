@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, replace
 
 from .constants import (NFT_TABLE, PROFILE_PREFIX, STALE_HANDSHAKE,
-                        TORGUARD_DNS_PRIORITY, TORGUARD_FWMARK)
+                        TORGUARD_DNS_PRIORITY, TORGUARD_FWMARK, TORGUARD_FWMARK_TEXT)
 from .importer import Profile
 from .nftables import FirewallContext, FirewallError, render
 
@@ -75,7 +75,7 @@ class HostSystem:
                              "connection.interface-name", interface,
                              "connection.autoconnect", "no",
                              "connection.permissions", permissions,
-                             "wireguard.fwmark", str(TORGUARD_FWMARK),
+                             "wireguard.fwmark", TORGUARD_FWMARK_TEXT,
                              "ipv4.never-default", "no",
                              "ipv4.dns-priority", str(TORGUARD_DNS_PRIORITY),
                              "ipv4.dns-search", "~."])
@@ -119,7 +119,7 @@ class HostSystem:
         # Reassert this on activation so profiles imported by an older backend cannot
         # retain negative priorities that suppress the physical split-DNS link.
         self.runner.run(["nmcli", "connection", "modify", "uuid", uuid,
-                         "wireguard.fwmark", str(TORGUARD_FWMARK),
+                         "wireguard.fwmark", TORGUARD_FWMARK_TEXT,
                          "ipv4.dns-priority", str(TORGUARD_DNS_PRIORITY),
                          "ipv4.dns-search", "~."],
                         timeout=min(2, remaining()))

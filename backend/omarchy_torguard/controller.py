@@ -67,11 +67,13 @@ class Controller:
 
     def __init__(self, store: StateStore, system: HostSystem, *, controller_uid: int | None = None,
                  clock: Callable[[], float] = time.time,
-                 monotonic: Callable[[], float] = time.monotonic):
+                 monotonic: Callable[[], float] = time.monotonic,
+                 sleeper: Callable[[float], None] = time.sleep):
         self.store = store
         self.system = system
         self.clock = clock
         self.monotonic = monotonic
+        self.sleeper = sleeper
         self.controller_uid = controller_uid
         self.network_policy = store.read("network.json", {})
         # Validate persisted policy before any firewall is generated.
@@ -317,7 +319,10 @@ class Controller:
                     local_interfaces=base.local_interfaces,
                     lan_dns_links=base.lan_dns_links), remaining())
                 interface = self.system.activate(profile["uuid"], remaining())
-                self.system.apply_firewall(FirewallContext(
+                # Activation can cause NetworkManager to republish physical-link DNS.
+                # Reassert ~lan and rebuild the firewall from the refreshed resolvers.
+                base = self.system.configure_lan_dns(base, remaining())
+                connected_context = FirewallContext(
                     tunnel_interface=interface, endpoints=endpoints,
                     torguard_fwmark=TORGUARD_FWMARK, lan_prefixes=base.lan_prefixes,
                     lan_resolvers=base.lan_resolvers, resolver_uid=base.resolver_uid,
@@ -325,13 +330,11 @@ class Controller:
                     alfred_endpoints=base.alfred_endpoints, alfred_routes=base.alfred_routes,
                     physical_interfaces=base.physical_interfaces,
                     local_interfaces=base.local_interfaces,
-                    lan_dns_links=base.lan_dns_links), remaining())
-                result = self.system.verify(profile["uuid"], interface, self.clock(), remaining(), base)
-                self.last_checks = result.checks
-                if not result.ok:
-                    raise SystemFailure(result.detail)
+                    lan_dns_links=base.lan_dns_links)
+                self.system.apply_firewall(connected_context, remaining())
+                self._wait_for_verification(profile["uuid"], interface, connected_context, remaining)
                 self.mode, self.current, self.interface = "connected", profile, interface
-                self.firewall_context = base
+                self.firewall_context = connected_context
                 self.retry_count, self.retry_at, self.last_error = 0, None, None
                 self.mru = [profile["id"]] + [item for item in self.mru if item != profile["id"]]
                 self.mru = self.mru[:20]
@@ -342,6 +345,31 @@ class Controller:
                 errors.append(str(exc))
                 self._emergency_disconnect()
         self._failure(errors[-1] if errors else "no profiles for target city")
+
+    def _wait_for_verification(self, uuid: str, interface: str, context: FirewallContext,
+                               remaining: Callable[[], float]):
+        last_error = "connection verification did not complete"
+        # The iteration cap protects tests/custom clocks that do not advance when sleeping;
+        # the monotonic deadline remains authoritative in production.
+        for _ in range(int(CITY_BUDGET / 0.5) + 1):
+            try:
+                budget = remaining()
+            except SystemFailure:
+                raise SystemFailure(last_error)
+            try:
+                result = self.system.verify(uuid, interface, self.clock(), budget, context)
+                self.last_checks = result.checks
+                if result.ok:
+                    return result
+                last_error = result.detail
+            except SystemFailure as exc:
+                last_error = str(exc)
+            try:
+                delay = min(0.5, remaining())
+            except SystemFailure:
+                raise SystemFailure(last_error)
+            self.sleeper(delay)
+        raise SystemFailure(last_error)
 
     def _schedule_connecting(self) -> None:
         self.mode = "connecting"

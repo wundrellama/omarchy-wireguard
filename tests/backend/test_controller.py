@@ -1,5 +1,6 @@
 import base64
 import unittest
+from dataclasses import replace
 
 from omarchy_torguard.controller import Controller, RequestFailure, network_context
 from omarchy_torguard.nftables import FirewallContext
@@ -37,6 +38,8 @@ class FakeSystem:
     def __init__(self):
         self.fail_activate = False
         self.verification = Verification(True, {"handshake_fresh": True}, "ok")
+        self.verification_results = []
+        self.verify_calls = 0
         self.firewalls = []
         self.deactivations = 0
         self.removals = 0
@@ -45,6 +48,8 @@ class FakeSystem:
         self.activations = []
         self.imported = []
         self.events = []
+        self.dns_configurations = 0
+        self.verified_contexts = []
 
     def inspect_firewall_context(self, timeout=10):
         return FirewallContext(lan_prefixes=("192.168.1.0/24",), physical_interfaces=("eth0",),
@@ -62,7 +67,10 @@ class FakeSystem:
 
     def configure_lan_dns(self, context, timeout=10):
         self.events.append("configure_lan_dns")
-        return context
+        self.dns_configurations += 1
+        resolver = f"192.168.1.{self.dns_configurations}"
+        return replace(context, lan_resolvers=(resolver,),
+                       lan_dns_links=(("eth0", (resolver,)),))
 
     def deactivate_managed(self):
         self.deactivations += 1
@@ -78,6 +86,10 @@ class FakeSystem:
         return "wg0"
 
     def verify(self, uuid, interface, now=None, timeout=10, firewall_context=None):
+        self.verify_calls += 1
+        self.verified_contexts.append(firewall_context)
+        if self.verification_results:
+            return self.verification_results.pop(0)
         return self.verification
 
     def managed_profiles(self):
@@ -98,7 +110,10 @@ class ControllerTests(unittest.TestCase):
         self.store = MemoryStore()
         self.system = FakeSystem()
         self.controller = Controller(self.store, self.system, clock=lambda: self.now,
-                                     monotonic=lambda: self.now)
+                                     monotonic=lambda: self.now, sleeper=self._sleep)
+
+    def _sleep(self, seconds):
+        self.now += seconds
 
     def test_successful_connect_updates_mru_and_persistence(self):
         result = self.controller.connect({"city": "Japan/Tokyo"})
@@ -115,6 +130,38 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result["target_city"]["city"], "Tokyo")
         self.assertLess(self.system.events.index("configure_lan_dns"),
                         self.system.events.index("activate"))
+        dns_events = [index for index, event in enumerate(self.system.events)
+                      if event == "configure_lan_dns"]
+        activation = self.system.events.index("activate")
+        self.assertEqual(len(dns_events), 2)
+        self.assertLess(dns_events[0], activation)
+        self.assertGreater(dns_events[1], activation)
+        self.assertEqual(self.controller.firewall_context.lan_resolvers, ("192.168.1.2",))
+        self.assertEqual(self.system.firewalls[-1].lan_resolvers, ("192.168.1.2",))
+        self.assertIs(self.system.verified_contexts[-1], self.controller.firewall_context)
+
+    def test_transient_verification_failure_recovers_within_city_budget(self):
+        transient = Verification(False, {"handshake_fresh": False}, "handshake not ready")
+        success = Verification(True, {"handshake_fresh": True}, "ok")
+        self.system.verification_results = [transient, success]
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        self.assertEqual(self.controller.mode, "connected")
+        self.assertEqual(self.system.verify_calls, 2)
+        self.assertEqual(self.now, 1000.5)
+        self.assertEqual(self.controller.last_checks, {"handshake_fresh": True})
+        self.assertIsNotNone(self.controller.firewall_context)
+
+    def test_verification_polling_uses_one_bounded_city_budget(self):
+        self.system.verification = Verification(False, {"handshake_fresh": False},
+                                                "handshake still pending")
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        self.assertEqual(self.controller.mode, "failed")
+        self.assertLessEqual(self.now - 1000.0, 20.0)
+        self.assertLessEqual(self.system.verify_calls, 41)
+        self.assertEqual(self.controller.last_checks, {"handshake_fresh": False})
+        self.assertEqual(self.controller.last_error, "handshake still pending")
 
     def test_failure_is_fail_closed_and_does_not_update_mru(self):
         self.system.fail_activate = True

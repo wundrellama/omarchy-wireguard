@@ -174,7 +174,8 @@ class SystemTests(unittest.TestCase):
         modify = runner.calls[-1][0]
         self.assertIn("connection.interface-name", modify)
         self.assertIn("wireguard.fwmark", modify)
-        self.assertIn(str(0x6F7467), modify)
+        self.assertEqual(modify[modify.index("wireguard.fwmark") + 1], "0x6f7467")
+        self.assertNotIn("7304295", modify)
         self.assertIn("ipv4.dns-search", modify)
         self.assertIn("~.", modify)
         self.assertEqual(modify[modify.index("ipv4.dns-priority") + 1], "10")
@@ -186,7 +187,7 @@ class SystemTests(unittest.TestCase):
     def test_activation_reasserts_positive_tunnel_dns_before_up(self):
         uuid = "00000000-0000-0000-0000-000000000001"
         modify = ("nmcli", "connection", "modify", "uuid", uuid,
-                  "wireguard.fwmark", str(0x6F7467),
+                  "wireguard.fwmark", "0x6f7467",
                   "ipv4.dns-priority", "10", "ipv4.dns-search", "~.")
         class ActivationRunner:
             def __init__(self):

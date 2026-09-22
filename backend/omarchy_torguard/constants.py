@@ -5,6 +5,7 @@ SOCKET_PATH = Path("/run/omarchy-torguard/control.sock")
 PROFILE_PREFIX = "omarchy-torguard-"
 NFT_TABLE = "omarchy_torguard"
 TORGUARD_FWMARK = 0x6F7467
+TORGUARD_FWMARK_TEXT = "0x6f7467"
 TORGUARD_DNS_PRIORITY = 10
 MAX_REQUEST = 256 * 1024
 MAX_RESPONSE = 256 * 1024
