@@ -1,0 +1,30 @@
+[Unit]
+Description=Omarchy TorGuard privileged control daemon
+Requires=omarchy-torguard-firewall.service NetworkManager.service
+After=omarchy-torguard-firewall.service NetworkManager.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/omarchy-torguard/backend.conf
+Environment=PYTHONPATH=/usr/lib/omarchy-torguard/backend
+ExecStart=/usr/bin/python3 -m omarchy_torguard.daemon --controller-uid=${CONTROLLER_UID}
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=omarchy-torguard
+RuntimeDirectoryMode=0755
+StateDirectory=omarchy-torguard
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=no
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+
+[Install]
+WantedBy=multi-user.target

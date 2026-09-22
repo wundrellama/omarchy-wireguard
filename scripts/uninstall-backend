@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+[[ $EUID -eq 0 ]] || { echo "Run with sudo" >&2; exit 1; }
+controller_user="${1:-}"
+[[ $controller_user =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "Controller user required" >&2; exit 1; }
+
+/usr/bin/omarchy-torguard emergency-disable
+while IFS=: read -r name uuid; do
+  [[ $name == omarchy-torguard-* ]] && nmcli connection delete uuid "$uuid" || true
+done < <(nmcli -t -f NAME,UUID connection show)
+
+controller_uid=$(id -u "$controller_user")
+home=$(getent passwd "$controller_user" | cut -d: -f6)
+runuser -u "$controller_user" -- env HOME="$home" USER="$controller_user" \
+  XDG_RUNTIME_DIR="/run/user/$controller_uid" OMARCHY_PATH=/usr/share/omarchy \
+  /usr/lib/omarchy-torguard/integrate-user remove
+
+rm -f /etc/systemd/system/NetworkManager.service.d/50-omarchy-torguard.conf
+systemctl daemon-reload
+systemctl disable --now omarchy-torguard-firewall.service
+rm -rf /var/lib/omarchy-torguard /etc/omarchy-torguard /usr/lib/omarchy-torguard
+rm -f /usr/bin/omarchy-torguard /usr/lib/systemd/system/omarchy-torguard.service \
+  /usr/lib/systemd/system/omarchy-torguard-firewall.service
+systemctl daemon-reload
+echo "TorGuard backend removed; remove the Omarchy plugin separately with: omarchy plugin remove nicolasdorier.torguard"

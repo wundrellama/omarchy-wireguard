@@ -1,0 +1,18 @@
+from pathlib import Path
+
+STATE_DIR = Path("/var/lib/omarchy-torguard")
+SOCKET_PATH = Path("/run/omarchy-torguard/control.sock")
+PROFILE_PREFIX = "omarchy-torguard-"
+NFT_TABLE = "omarchy_torguard"
+TORGUARD_FWMARK = 0x6F7467
+TORGUARD_DNS_PRIORITY = 10
+MAX_REQUEST = 256 * 1024
+MAX_RESPONSE = 256 * 1024
+REQUEST_TIMEOUT = 3.0
+CITY_BUDGET = 20.0
+STALE_HANDSHAKE = 90
+PAUSE_SECONDS = 600
+MAX_RETRY = 300
+MAX_ARCHIVE = 16 * 1024 * 1024
+MAX_MEMBER = 512 * 1024
+MAX_FILES = 512

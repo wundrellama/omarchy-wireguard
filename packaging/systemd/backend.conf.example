@@ -1,0 +1,2 @@
+# Numeric UID of the only non-root account allowed to control the daemon.
+CONTROLLER_UID=1000
