@@ -4,7 +4,7 @@ import socket
 import unittest
 from unittest.mock import patch
 
-from omarchy_torguard.protocol import ProtocolError, authorized, peer_credentials, read_request
+from omarchy_wireguard.protocol import ProtocolError, authorized, peer_credentials, read_request
 
 
 class ProtocolTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class ProtocolTests(unittest.TestCase):
     def test_size_limit(self):
         left, right = socket.socketpair()
         try:
-            with patch("omarchy_torguard.protocol.MAX_REQUEST", 20):
+            with patch("omarchy_wireguard.protocol.MAX_REQUEST", 20):
                 right.sendall(b'{"op":"status","padding":"x"}\n')
                 with self.assertRaisesRegex(ProtocolError, "too large"):
                     read_request(left)

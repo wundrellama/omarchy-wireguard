@@ -13,7 +13,7 @@ from .protocol import ProtocolError, authorized, peer_credentials, read_request,
 from .storage import StateStore
 from .system import HostSystem, SystemFailure
 
-LOG = logging.getLogger("omarchy-torguard")
+LOG = logging.getLogger("omarchy-wireguard")
 
 
 def serve(controller_uid: int, socket_path: Path = SOCKET_PATH, state_dir: Path = STATE_DIR) -> None:

@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, replace
 
 from .constants import (NFT_TABLE, PROFILE_PREFIX, STALE_HANDSHAKE,
-                        TORGUARD_DNS_PRIORITY, TORGUARD_FWMARK, TORGUARD_FWMARK_TEXT)
+                         WIREGUARD_DNS_PRIORITY, WIREGUARD_FWMARK, WIREGUARD_FWMARK_TEXT)
 from .importer import Profile
 from .nftables import FirewallContext, FirewallError, render
 
@@ -49,7 +49,7 @@ class HostSystem:
     def import_profile(self, profile: Profile, connection_name: str) -> str:
         if not re.fullmatch(rf"{PROFILE_PREFIX}[a-z0-9-]+", connection_name):
             raise SystemFailure("invalid managed profile name")
-        fd, path = tempfile.mkstemp(prefix="import-", suffix=".conf", dir="/run/omarchy-torguard")
+        fd, path = tempfile.mkstemp(prefix="import-", suffix=".conf", dir="/run/omarchy-wireguard")
         uuid = None
         try:
             os.fchmod(fd, 0o600)
@@ -63,7 +63,7 @@ class HostSystem:
             if not match:
                 raise SystemFailure("NetworkManager did not return an imported UUID")
             uuid = match.group(1)
-            interface = "otg-" + hashlib.sha256(connection_name.encode("ascii")).hexdigest()[:10]
+            interface = "owg-" + hashlib.sha256(connection_name.encode("ascii")).hexdigest()[:10]
             permissions = ""
             if self.controller_uid is not None:
                 try:
@@ -75,9 +75,9 @@ class HostSystem:
                              "connection.interface-name", interface,
                              "connection.autoconnect", "no",
                              "connection.permissions", permissions,
-                             "wireguard.fwmark", TORGUARD_FWMARK_TEXT,
+                             "wireguard.fwmark", WIREGUARD_FWMARK_TEXT,
                              "ipv4.never-default", "no",
-                             "ipv4.dns-priority", str(TORGUARD_DNS_PRIORITY),
+                             "ipv4.dns-priority", str(WIREGUARD_DNS_PRIORITY),
                              "ipv4.dns-search", "~."])
             return uuid
         except Exception:
@@ -119,8 +119,8 @@ class HostSystem:
         # Reassert this on activation so profiles imported by an older backend cannot
         # retain negative priorities that suppress the physical split-DNS link.
         self.runner.run(["nmcli", "connection", "modify", "uuid", uuid,
-                         "wireguard.fwmark", TORGUARD_FWMARK_TEXT,
-                         "ipv4.dns-priority", str(TORGUARD_DNS_PRIORITY),
+                          "wireguard.fwmark", WIREGUARD_FWMARK_TEXT,
+                          "ipv4.dns-priority", str(WIREGUARD_DNS_PRIORITY),
                          "ipv4.dns-search", "~."],
                         timeout=min(2, remaining()))
         activation_timeout = remaining()
@@ -268,7 +268,7 @@ class HostSystem:
         profile_ok = "activated" in active.lower() and interface in active
         mark_text = self.runner.run(["wg", "show", interface, "fwmark"], timeout=each).strip()
         try:
-            fwmark_ok = int(mark_text, 0) == TORGUARD_FWMARK
+            fwmark_ok = int(mark_text, 0) == WIREGUARD_FWMARK
         except ValueError:
             fwmark_ok = False
         route4 = json.loads(self.runner.run(["ip", "-json", "route", "get", "1.1.1.1"], timeout=each))
@@ -284,8 +284,8 @@ class HostSystem:
                                 re.DOTALL) is not None
         mark_match = re.search(r"meta mark (0x[0-9a-fA-F]+|[0-9]+)", firewall)
         firewall_ok = (f"table inet {NFT_TABLE}" in firewall and
-                       "TorGuard fail closed" in firewall and output_drop and mark_match is not None and
-                       int(mark_match.group(1), 0) == TORGUARD_FWMARK)
+                       "WireGuard fail closed" in firewall and output_drop and mark_match is not None and
+                       int(mark_match.group(1), 0) == WIREGUARD_FWMARK)
         ipv6_blocked = firewall_ok
         tunnel_servers = set(_resolved_addresses(
             self.runner.run(["resolvectl", "dns", interface], timeout=each)))
@@ -318,7 +318,7 @@ def _is_underlay(name: str, link: dict, local: set[str]) -> bool:
     if kind in {"wireguard", "tun", "tap", "veth", "bridge", "vxlan", "gre", "gretap",
                 "ipip", "sit", "xfrm", "macvlan", "macvtap"} or name in local:
         return False
-    return re.match(r"^(?:wg|tun|tap|ppp|veth|docker|br-|virbr|tailscale|zt|zerotier|proton|nord|vpn|alfred|otg-)",
+    return re.match(r"^(?:wg|tun|tap|ppp|veth|docker|br-|virbr|tailscale|zt|zerotier|proton|nord|vpn|alfred|owg-)",
                     name, re.IGNORECASE) is None
 
 

@@ -42,11 +42,11 @@ Item {
   function refresh() {
     if (!statusProcess.running) {
       refreshing = true
-      statusProcess.command = ["omarchy-torguard", "status"]
+      statusProcess.command = ["omarchy-wireguard", "status"]
       statusProcess.running = true
     }
     if (!listProcess.running && (panelOpen || !catalog.locations || catalog.locations.length === 0)) {
-      listProcess.command = ["omarchy-torguard", "list"]
+      listProcess.command = ["omarchy-wireguard", "list"]
       listProcess.running = true
     }
   }
@@ -55,7 +55,7 @@ Item {
     if (busy || actionProcess.running) return
     pendingAction = name
     actionMessage = name
-    actionProcess.command = ["omarchy-torguard"].concat(args)
+    actionProcess.command = ["omarchy-wireguard"].concat(args)
     actionProcess.running = true
   }
 
@@ -73,8 +73,8 @@ Item {
     replaceImport = replace === true
     pickerMode = directory === true ? "directory" : "files"
     pickerProcess.command = directory === true
-      ? ["omarchy-file-select", "--title", "Import TorGuard profile directory", "--directory"]
-      : ["omarchy-file-select", "--title", "Import TorGuard profiles", "--multiple", "--extensions", "zip conf"]
+      ? ["omarchy-file-select", "--title", "Import WireGuard profile directory", "--directory"]
+      : ["omarchy-file-select", "--title", "Import WireGuard profiles", "--multiple", "--extensions", "zip conf"]
     pickerProcess.running = true
   }
 
@@ -95,23 +95,24 @@ Item {
     if (installProcess.running || !currentUser) return
     actionMessage = "Uninstalling backend"
     installProcess.operation = "uninstall"
-    installProcess.command = ["pkexec", "/usr/lib/omarchy-torguard/uninstall-backend", currentUser]
+    installProcess.command = ["pkexec", "/usr/lib/omarchy-wireguard/uninstall-backend", currentUser]
     installProcess.running = true
   }
 
   function openGenerator() {
+    // TorGuard assumption: this optional shortcut opens TorGuard's profile generator.
     Quickshell.execDetached(["omarchy-launch-browser", "https://torguard.net/tgconf.php?action=vpn-wireguardconfig"])
   }
 
   function copyDiagnostics() {
     if (diagnosticsProcess.running || clipboardProcess.running) return
     diagnosticsText = ""
-    diagnosticsProcess.command = ["omarchy-torguard", "diagnostics"]
+    diagnosticsProcess.command = ["omarchy-wireguard", "diagnostics"]
     diagnosticsProcess.running = true
   }
 
   function notify(summary, body, urgency) {
-    Quickshell.execDetached(["notify-send", "--app-name", "TorGuard", "--urgency", urgency || "normal", summary, body || ""])
+    Quickshell.execDetached(["notify-send", "--app-name", "WireGuard", "--urgency", urgency || "normal", summary, body || ""])
   }
 
   function applyStatus(raw) {
@@ -121,9 +122,9 @@ Item {
       return
     }
     if (sawFirstStatus && !next.backendNotifies) {
-      if (next.state === "failed" && previousState !== "failed") notify("TorGuard connection failed", next.reason, "critical")
-      else if (next.state === "connected" && previousState === "failed") notify("TorGuard recovered", next.location, "normal")
-      if (previousPaused && !next.paused) notify("TorGuard pause expired", "VPN protection resumed", "normal")
+      if (next.state === "failed" && previousState !== "failed") notify("WireGuard connection failed", next.reason, "critical")
+      else if (next.state === "connected" && previousState === "failed") notify("WireGuard recovered", next.location, "normal")
+      if (previousPaused && !next.paused) notify("WireGuard pause expired", "VPN protection resumed", "normal")
     }
     previousState = next.state
     previousPaused = next.paused
@@ -139,7 +140,7 @@ Item {
 
   function markCliUnavailable(message) {
     refreshing = false
-    lastError = message || "TorGuard CLI is not available"
+    lastError = message || "WireGuard CLI is not available"
     var next = ({})
     for (var key in status) next[key] = status[key]
     next.installed = false
@@ -223,9 +224,9 @@ Item {
       root.refreshing = false
       if (exitCode === 0) root.applyStatus(statusStdout.text)
       else {
-        var error = String(statusStderr.text || statusStdout.text || "TorGuard backend unavailable").trim()
+        var error = String(statusStderr.text || statusStdout.text || "WireGuard backend unavailable").trim()
         root.markCliUnavailable(error)
-        if (root.sawFirstStatus && root.previousState !== "failed") root.notify("TorGuard status failed", error, "critical")
+        if (root.sawFirstStatus && root.previousState !== "failed") root.notify("WireGuard status failed", error, "critical")
         root.previousState = "failed"
       }
     }
@@ -235,7 +236,7 @@ Item {
     id: statusLaunchCheck
     interval: 1
     repeat: false
-    onTriggered: if (!statusProcess.running && !statusProcess.handledExit) root.markCliUnavailable("Could not launch omarchy-torguard")
+    onTriggered: if (!statusProcess.running && !statusProcess.handledExit) root.markCliUnavailable("Could not launch omarchy-wireguard")
   }
 
   Process {
@@ -244,7 +245,7 @@ Item {
     stderr: StdioCollector { id: listStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.lastError = String(listStderr.text || listStdout.text || "Could not list TorGuard locations").trim()
+        root.lastError = String(listStderr.text || listStdout.text || "Could not list WireGuard locations").trim()
         return
       }
       var parsed = Model.parseCatalog(listStdout.text)
@@ -265,7 +266,7 @@ Item {
       var action = root.pendingAction
       root.pendingAction = ""
       root.actionMessage = ""
-      if (exitCode !== 0) root.actionError = String(actionStderr.text || actionStdout.text || "TorGuard action failed").trim()
+      if (exitCode !== 0) root.actionError = String(actionStderr.text || actionStdout.text || "WireGuard action failed").trim()
       else {
         root.actionError = ""
         if (String(actionStdout.text || "").trim().charAt(0) === "{") root.applyActionOutput(actionStdout.text)

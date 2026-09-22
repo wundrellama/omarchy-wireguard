@@ -1,12 +1,12 @@
 import unittest
 
-from omarchy_torguard.nftables import FirewallContext, FirewallError, render
+from omarchy_wireguard.nftables import FirewallContext, FirewallError, render
 
 
 class FirewallTests(unittest.TestCase):
     def test_fail_closed_has_output_and_forward_drop(self):
         rules = render(FirewallContext(physical_interfaces=("eth0",)))
-        self.assertIn("table inet omarchy_torguard", rules)
+        self.assertIn("table inet omarchy_wireguard", rules)
         self.assertEqual(rules.count("policy drop"), 2)
         self.assertIn("protect Docker and VM forwarding", rules)
         self.assertNotIn("ct state established,related accept", rules)
@@ -14,7 +14,7 @@ class FirewallTests(unittest.TestCase):
     def test_renders_only_exact_endpoints_and_explicit_alfred_routes(self):
         rules = render(FirewallContext(
             tunnel_interface="wg0", endpoints=(("198.51.100.4", 51820),),
-            torguard_fwmark=0x6F7467,
+            wireguard_fwmark=0x6F7467,
             lan_prefixes=("192.168.4.0/24",), lan_resolvers=("192.168.4.1",), resolver_uid=992,
             physical_interfaces=("eth0",), alfred_interface="alfred-vpn",
             alfred_endpoints=(("203.0.113.9", 12345),), alfred_routes=("10.7.0.0/16",),
@@ -46,10 +46,10 @@ class FirewallTests(unittest.TestCase):
         with self.assertRaises(FirewallError):
             render(FirewallContext(endpoints=(("192.0.2.1", 70000),)))
 
-    def test_endpoint_exceptions_require_underlay_and_torguard_mark(self):
+    def test_endpoint_exceptions_require_underlay_and_wireguard_mark(self):
         with self.assertRaisesRegex(FirewallError, "physical"):
             render(FirewallContext(endpoints=(("192.0.2.1", 51820),),
-                                   torguard_fwmark=0x6F7467))
+                                    wireguard_fwmark=0x6F7467))
         with self.assertRaisesRegex(FirewallError, "fwmark"):
             render(FirewallContext(endpoints=(("192.0.2.1", 51820),),
                                    physical_interfaces=("eth0",)))

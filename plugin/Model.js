@@ -232,7 +232,7 @@ function countdownText(seconds) {
 
 function tooltip(status) {
   var value = object(status)
-  var lines = ["TorGuard: " + (text(value.state) || "checking")]
+  var lines = ["WireGuard: " + (text(value.state) || "checking")]
   var location = text(value.targetLocation) || text(value.location)
   if (location) lines.push("Location: " + location)
   if (value.reason) lines.push("Reason: " + text(value.reason))

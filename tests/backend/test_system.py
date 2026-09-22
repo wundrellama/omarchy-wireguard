@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from omarchy_torguard.importer import Profile
-from omarchy_torguard.nftables import FirewallContext
-from omarchy_torguard.system import CommandRunner, HostSystem, SystemFailure
+from omarchy_wireguard.importer import Profile
+from omarchy_wireguard.nftables import FirewallContext
+from omarchy_wireguard.system import CommandRunner, HostSystem, SystemFailure
 
 
 class FakeRunner:
@@ -44,8 +44,8 @@ class SystemTests(unittest.TestCase):
             ("ip", "-json", "route", "get", "1.1.1.1"): json.dumps([{"dev": "wg0"}]),
             ("ip", "-6", "-json", "route", "get", "2606:4700:4700::1111"):
                 SystemFailure("no IPv6 route"),
-            ("nft", "list", "table", "inet", "omarchy_torguard"):
-                "table inet omarchy_torguard { chain output { type filter hook output priority -10; policy drop; meta mark 0x6f7467; comment \"TorGuard fail closed\"; } }",
+            ("nft", "list", "table", "inet", "omarchy_wireguard"):
+                "table inet omarchy_wireguard { chain output { type filter hook output priority -10; policy drop; meta mark 0x6f7467; comment \"WireGuard fail closed\"; } }",
             ("resolvectl", "dns", "wg0"): "Link 7 (wg0): 10.0.0.1\n",
             ("resolvectl", "domain", "wg0"): "Link 7 (wg0): ~.\n",
             ("resolvectl", "domain", "eth0"): "Link 2 (eth0): corp.example ~lan\n",
@@ -76,9 +76,9 @@ class SystemTests(unittest.TestCase):
                                                           firewall_context=context)
         self.assertFalse(result.checks["wireguard_fwmark"])
 
-        responses[("nft", "list", "table", "inet", "omarchy_torguard")] = (
-            "table inet omarchy_torguard { chain output { type filter hook output priority -10; "
-            "policy drop; comment \"TorGuard fail closed\"; } }")
+        responses[("nft", "list", "table", "inet", "omarchy_wireguard")] = (
+            "table inet omarchy_wireguard { chain output { type filter hook output priority -10; "
+            "policy drop; comment \"WireGuard fail closed\"; } }")
         result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
                                                           firewall_context=context)
         self.assertFalse(result.checks["firewall_policy"])
@@ -86,21 +86,21 @@ class SystemTests(unittest.TestCase):
     def test_only_prefixed_profiles_are_managed(self):
         runner = FakeRunner({
             ("nmcli", "-t", "-f", "NAME,UUID", "connection", "show"):
-                "omarchy-torguard-japan:managed-uuid\nwork-vpn:unrelated-uuid\n",
+                "omarchy-wireguard-japan:managed-uuid\nwork-vpn:unrelated-uuid\n",
         })
         self.assertEqual(HostSystem(runner).managed_profiles(),
-                         {"managed-uuid": "omarchy-torguard-japan"})
+                         {"managed-uuid": "omarchy-wireguard-japan"})
 
     def test_remove_firewall_is_idempotent_and_scoped(self):
         absent = FakeRunner({("nft", "list", "tables"): "table inet filter\n"})
         HostSystem(absent).remove_firewall()
         self.assertEqual(len(absent.calls), 1)
         present = FakeRunner({
-            ("nft", "list", "tables"): "table inet filter\ntable inet omarchy_torguard\n",
-            ("nft", "delete", "table", "inet", "omarchy_torguard"): "",
+            ("nft", "list", "tables"): "table inet filter\ntable inet omarchy_wireguard\n",
+            ("nft", "delete", "table", "inet", "omarchy_wireguard"): "",
         })
         HostSystem(present).remove_firewall()
-        self.assertEqual(present.calls[-1][0], ["nft", "delete", "table", "inet", "omarchy_torguard"])
+        self.assertEqual(present.calls[-1][0], ["nft", "delete", "table", "inet", "omarchy_wireguard"])
 
     def test_configures_lan_split_dns_and_discovers_resolvers(self):
         runner = FakeRunner({
@@ -135,15 +135,15 @@ class SystemTests(unittest.TestCase):
                 "1.1.1.1, 9.9.9.9\n",
             ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid):
                 "2606:4700:4700::1111\n",
-            ("resolvectl", "dns", "otg-test", "1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"): "",
-            ("resolvectl", "domain", "otg-test", "~."): "",
-            ("resolvectl", "default-route", "otg-test", "yes"): "",
+            ("resolvectl", "dns", "owg-test", "1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"): "",
+            ("resolvectl", "domain", "owg-test", "~."): "",
+            ("resolvectl", "default-route", "owg-test", "yes"): "",
         })
-        servers = HostSystem(runner).configure_tunnel_dns(uuid, "otg-test")
+        servers = HostSystem(runner).configure_tunnel_dns(uuid, "owg-test")
         self.assertEqual(servers, ("1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"))
         self.assertEqual([call[0][0] for call in runner.calls],
                          ["nmcli", "nmcli", "resolvectl", "resolvectl", "resolvectl"])
-        self.assertEqual(runner.calls[2][0][:3], ["resolvectl", "dns", "otg-test"])
+        self.assertEqual(runner.calls[2][0][:3], ["resolvectl", "dns", "owg-test"])
 
     def test_rejects_invalid_or_missing_profile_dns_before_resolved_changes(self):
         uuid = "00000000-0000-0000-0000-000000000001"
@@ -153,13 +153,13 @@ class SystemTests(unittest.TestCase):
                 ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid): "",
             })
             with self.assertRaises(SystemFailure):
-                HostSystem(runner).configure_tunnel_dns(uuid, "otg-test")
+                HostSystem(runner).configure_tunnel_dns(uuid, "owg-test")
             self.assertTrue(all(call[0][0] == "nmcli" for call in runner.calls))
 
     def test_clears_only_tunnel_runtime_dns(self):
-        runner = FakeRunner({("resolvectl", "revert", "otg-test"): ""})
-        HostSystem(runner).clear_tunnel_dns("otg-test")
-        self.assertEqual(runner.calls[0][0], ["resolvectl", "revert", "otg-test"])
+        runner = FakeRunner({("resolvectl", "revert", "owg-test"): ""})
+        HostSystem(runner).clear_tunnel_dns("owg-test")
+        self.assertEqual(runner.calls[0][0], ["resolvectl", "revert", "owg-test"])
 
     def test_inspects_physical_lan_and_bridge_ports(self):
         runner = FakeRunner({
@@ -191,12 +191,12 @@ class SystemTests(unittest.TestCase):
     def test_import_sets_deterministic_interface_dns_and_permissions(self):
         fd, path = tempfile.mkstemp()
         uuid = "00000000-0000-0000-0000-000000000001"
-        name = "omarchy-torguard-japan-tokyo-1"
+        name = "omarchy-wireguard-japan-tokyo-1"
         import_command = ("nmcli", "connection", "import", "type", "wireguard", "file", path)
         runner = FakeRunner({import_command: f"Connection imported ({uuid})\n"})
         profile = Profile("jp.conf", "Japan", "Tokyo", "192.0.2.1", 51820,
                           "[Interface]\nPrivateKey = secret\n")
-        with patch("omarchy_torguard.system.tempfile.mkstemp", return_value=(fd, path)):
+        with patch("omarchy_wireguard.system.tempfile.mkstemp", return_value=(fd, path)):
             # Accept the deterministic modify command after observing it.
             original = runner.run
             def run(argv, *, stdin=None, timeout=10):
@@ -233,13 +233,13 @@ class SystemTests(unittest.TestCase):
                 if argv[:4] == ["nmcli", "--wait", argv[2], "connection"]:
                     return ""
                 if argv[:4] == ["nmcli", "-g", "GENERAL.DEVICES", "connection"]:
-                    return "otg-test\n"
+                    return "owg-test\n"
                 if tuple(argv) == modify:
                     return ""
                 raise AssertionError(f"unexpected command: {argv}")
 
         runner = ActivationRunner()
-        self.assertEqual(HostSystem(runner).activate(uuid, 10), "otg-test")
+        self.assertEqual(HostSystem(runner).activate(uuid, 10), "owg-test")
         self.assertEqual(tuple(runner.calls[0][0]), modify)
         self.assertEqual(runner.calls[1][0][0:2], ["nmcli", "--wait"])
         self.assertEqual(runner.calls[1][0][3:], ["connection", "up", "uuid", uuid])

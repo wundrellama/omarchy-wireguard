@@ -5,7 +5,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from omarchy_torguard.importer import ImportFailure, expand_archives, parse_config, parse_profiles, read_path
+from omarchy_wireguard.importer import ImportFailure, expand_archives, parse_config, parse_profiles, read_path
 
 
 CONFIG = """[Interface]

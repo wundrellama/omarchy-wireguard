@@ -13,7 +13,7 @@ class FirewallError(ValueError):
 class FirewallContext:
     tunnel_interface: str | None = None
     endpoints: tuple[tuple[str, int], ...] = ()
-    torguard_fwmark: int | None = None
+    wireguard_fwmark: int | None = None
     lan_prefixes: tuple[str, ...] = ()
     lan_resolvers: tuple[str, ...] = ()
     resolver_uid: int | None = None
@@ -76,10 +76,10 @@ def render(context: FirewallContext) -> str:
         (alfred4 if address.version == 4 else alfred6).append(f"{address} . {port}")
     if endpoint4 or endpoint6:
         if not physical:
-            raise FirewallError("TorGuard endpoints require a verified physical interface")
-        if (not isinstance(context.torguard_fwmark, int) or isinstance(context.torguard_fwmark, bool) or
-                not 1 <= context.torguard_fwmark <= 0xFFFFFFFF):
-            raise FirewallError("TorGuard endpoints require a dedicated fwmark")
+            raise FirewallError("WireGuard endpoints require a verified physical interface")
+        if (not isinstance(context.wireguard_fwmark, int) or isinstance(context.wireguard_fwmark, bool) or
+                not 1 <= context.wireguard_fwmark <= 0xFFFFFFFF):
+            raise FirewallError("WireGuard endpoints require a dedicated fwmark")
     if (alfred4 or alfred6) and not physical:
         raise FirewallError("alfred-vpn endpoints require a verified physical interface")
     lan4 = _networks(context.lan_prefixes, 4)
@@ -97,15 +97,15 @@ def render(context: FirewallContext) -> str:
         "    oifname \"lo\" accept",
     ]
     if tunnel:
-        lines.append(f'    oifname "{tunnel}" accept comment "selected TorGuard tunnel"')
+        lines.append(f'    oifname "{tunnel}" accept comment "selected WireGuard tunnel"')
     lines += _output_underlay(physical, endpoint4, endpoint6, alfred4, alfred6, lan4, lan6,
-                              dns4, dns6, context.resolver_uid, context.torguard_fwmark)
+                               dns4, dns6, context.resolver_uid, context.wireguard_fwmark)
     if routes4 and alfred:
         lines.append(f'    oifname "{alfred}" ip daddr {_set(routes4)} accept')
     if routes6 and alfred:
         lines.append(f'    oifname "{alfred}" ip6 daddr {_set(routes6)} accept')
     lines += [
-        "    counter drop comment \"TorGuard fail closed\"",
+        "    counter drop comment \"WireGuard fail closed\"",
         "  }",
         "  chain forward {",
         "    type filter hook forward priority -10; policy drop;",
@@ -142,14 +142,14 @@ def render(context: FirewallContext) -> str:
 
 
 def _output_underlay(physical, endpoint4, endpoint6, alfred4, alfred6, lan4, lan6, dns4, dns6,
-                     resolver_uid, torguard_fwmark):
+                     resolver_uid, wireguard_fwmark):
     lines: list[str] = []
     quoted_physical = [f'"{item}"' for item in physical]
     devices = f"oifname {_set(quoted_physical)} " if physical else ""
     if endpoint4:
-        lines.append(f"    meta mark {torguard_fwmark:#x} {devices}ip daddr . udp dport {_set(sorted(set(endpoint4)))} accept comment \"TorGuard endpoints\"")
+        lines.append(f"    meta mark {wireguard_fwmark:#x} {devices}ip daddr . udp dport {_set(sorted(set(endpoint4)))} accept comment \"WireGuard endpoints\"")
     if endpoint6:
-        lines.append(f"    meta mark {torguard_fwmark:#x} {devices}ip6 daddr . udp dport {_set(sorted(set(endpoint6)))} accept comment \"TorGuard endpoints\"")
+        lines.append(f"    meta mark {wireguard_fwmark:#x} {devices}ip6 daddr . udp dport {_set(sorted(set(endpoint6)))} accept comment \"WireGuard endpoints\"")
     if alfred4:
         lines.append(f"    meta skuid 0 {devices}ip daddr . udp dport {_set(sorted(set(alfred4)))} accept comment \"alfred-vpn endpoints\"")
     if alfred6:

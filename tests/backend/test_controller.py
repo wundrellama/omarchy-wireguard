@@ -2,9 +2,9 @@ import base64
 import unittest
 from dataclasses import replace
 
-from omarchy_torguard.controller import Controller, RequestFailure, network_context
-from omarchy_torguard.nftables import FirewallContext
-from omarchy_torguard.system import SystemFailure, Verification
+from omarchy_wireguard.controller import Controller, RequestFailure, network_context
+from omarchy_wireguard.nftables import FirewallContext
+from omarchy_wireguard.system import SystemFailure, Verification
 
 
 PROFILE = {"id": "japan-tokyo-1", "uuid": "uuid-1", "source_name": "jp-tokyo.conf",

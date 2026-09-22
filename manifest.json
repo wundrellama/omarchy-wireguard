@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "nicolasdorier.torguard",
-  "name": "TorGuard",
+  "id": "nicolasdorier.wireguard",
+  "name": "WireGuard",
   "version": "1.0.0",
   "author": "Nicolas Dorier",
   "license": "MIT",
-  "description": "TorGuard WireGuard status and location controls for Omarchy.",
+  "description": "WireGuard status and location controls for Omarchy.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "plugin/BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "TorGuard",
-    "description": "Show TorGuard state, connect to locations, pause, retry, and manage profiles.",
+    "displayName": "WireGuard",
+    "description": "Show WireGuard state, connect to locations, pause, retry, and manage profiles.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

@@ -1,0 +1,19 @@
+from pathlib import Path
+
+STATE_DIR = Path("/var/lib/omarchy-wireguard")
+SOCKET_PATH = Path("/run/omarchy-wireguard/control.sock")
+PROFILE_PREFIX = "omarchy-wireguard-"
+NFT_TABLE = "omarchy_wireguard"
+WIREGUARD_FWMARK = 0x6F7467
+WIREGUARD_FWMARK_TEXT = "0x6f7467"
+WIREGUARD_DNS_PRIORITY = 10
+MAX_REQUEST = 256 * 1024
+MAX_RESPONSE = 256 * 1024
+REQUEST_TIMEOUT = 3.0
+CITY_BUDGET = 20.0
+STALE_HANDSHAKE = 90
+PAUSE_SECONDS = 600
+MAX_RETRY = 300
+MAX_ARCHIVE = 16 * 1024 * 1024
+MAX_MEMBER = 512 * 1024
+MAX_FILES = 512

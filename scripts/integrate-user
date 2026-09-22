@@ -14,13 +14,13 @@ from pathlib import Path
 mode, filename = sys.argv[1:]
 path = Path(filename)
 text = path.read_text(encoding="utf-8")
-start = "  // omarchy-torguard:start"
-end = "  // omarchy-torguard:end"
-entry = ('  "setup.network.torguard": {"icon":"󰦝","label":"TorGuard VPN",'
+start = "  // omarchy-wireguard:start"
+end = "  // omarchy-wireguard:end"
+entry = ('  "setup.network.wireguard": {"icon":"󰦝","label":"WireGuard VPN",'
          '"aliases":["torguard","vpn","wireguard"],'
-         '"action":"omarchy-shell shell toggle nicolasdorier.torguard {}"}')
+         '"action":"omarchy-shell shell toggle nicolasdorier.wireguard {}"}')
 
-pattern = re.compile(r"\n?\s*// omarchy-torguard:start\n.*?\n\s*// omarchy-torguard:end\n?", re.S)
+pattern = re.compile(r"\n?\s*// omarchy-wireguard:start\n.*?\n\s*// omarchy-wireguard:end\n?", re.S)
 text = pattern.sub("\n", text)
 
 def significant_before_close(source):
@@ -38,12 +38,12 @@ if mode == "install":
 else:
     text = re.sub(r",\s*\n(\s*})", r"\n\1", text)
 
-temporary = path.with_name(path.name + ".omarchy-torguard.tmp")
+temporary = path.with_name(path.name + ".omarchy-wireguard.tmp")
 temporary.write_text(text, encoding="utf-8")
 temporary.replace(path)
 PY
 
 if [[ $mode == install ]]; then
-  omarchy bar move nicolasdorier.torguard --section right --before omarchy.network >/dev/null
+  omarchy bar move nicolasdorier.wireguard --section right --before omarchy.network >/dev/null
   omarchy menu refresh >/dev/null 2>&1 || true
 fi

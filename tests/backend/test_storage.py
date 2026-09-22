@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from omarchy_torguard.storage import StateStore
+from omarchy_wireguard.storage import StateStore
 
 
 class StorageTests(unittest.TestCase):

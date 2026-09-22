@@ -2,7 +2,7 @@
 set -euo pipefail
 
 fail() {
-  echo "omarchy-torguard: $*" >&2
+  echo "omarchy-wireguard: $*" >&2
   exit 1
 }
 
@@ -14,7 +14,7 @@ controller_uid=$(id -u "$controller_user" 2>/dev/null) || fail "controller user 
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_dir=$(cd -- "$script_dir/.." && pwd -P)
-[[ -f $repo_dir/manifest.json && -d $repo_dir/backend/omarchy_torguard ]] || fail "invalid plugin checkout"
+[[ -f $repo_dir/manifest.json && -d $repo_dir/backend/omarchy_wireguard ]] || fail "invalid plugin checkout"
 if find "$repo_dir/backend" "$repo_dir/bin" "$repo_dir/packaging" -type l -print -quit | grep -q .; then
   fail "installation source must not contain symlinks"
 fi
@@ -23,65 +23,65 @@ if ! command -v wg >/dev/null 2>&1; then
   pacman -S --needed --noconfirm wireguard-tools
 fi
 
-install -d -m 0755 /usr/lib/omarchy-torguard /etc/omarchy-torguard \
+install -d -m 0755 /usr/lib/omarchy-wireguard /etc/omarchy-wireguard \
   /etc/systemd/system/NetworkManager.service.d
-stage=$(mktemp -d /usr/lib/omarchy-torguard/.backend.XXXXXX)
+stage=$(mktemp -d /usr/lib/omarchy-wireguard/.backend.XXXXXX)
 backup=""
 had_networkmanager_dropin=false
-[[ ! -f /etc/systemd/system/NetworkManager.service.d/50-omarchy-torguard.conf ]] || had_networkmanager_dropin=true
+[[ ! -f /etc/systemd/system/NetworkManager.service.d/50-omarchy-wireguard.conf ]] || had_networkmanager_dropin=true
 cleanup() {
   [[ -z $stage ]] || rm -rf "$stage"
   if [[ -n $backup && -d $backup ]]; then
-    rm -rf /usr/lib/omarchy-torguard/backend
-    mv "$backup" /usr/lib/omarchy-torguard/backend
+    rm -rf /usr/lib/omarchy-wireguard/backend
+    mv "$backup" /usr/lib/omarchy-wireguard/backend
   fi
   if [[ $had_networkmanager_dropin == false ]]; then
-    rm -f /etc/systemd/system/NetworkManager.service.d/50-omarchy-torguard.conf
-    systemctl disable --now omarchy-torguard.service omarchy-torguard-firewall.service >/dev/null 2>&1 || true
-    nft delete table inet omarchy_torguard >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/NetworkManager.service.d/50-omarchy-wireguard.conf
+    systemctl disable --now omarchy-wireguard.service omarchy-wireguard-firewall.service >/dev/null 2>&1 || true
+    nft delete table inet omarchy_wireguard >/dev/null 2>&1 || true
   else
-    systemctl restart omarchy-torguard.service >/dev/null 2>&1 || true
+    systemctl restart omarchy-wireguard.service >/dev/null 2>&1 || true
   fi
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
 trap cleanup ERR
-cp -R --no-preserve=ownership "$repo_dir/backend/omarchy_torguard" "$stage/"
+cp -R --no-preserve=ownership "$repo_dir/backend/omarchy_wireguard" "$stage/"
 if find "$stage" -type l -print -quit | grep -q .; then
   fail "staged backend contains a symlink"
 fi
 chown -R root:root "$stage"
 find "$stage" -type d -exec chmod 0755 {} +
 find "$stage" -type f -exec chmod 0644 {} +
-if [[ -d /usr/lib/omarchy-torguard/backend ]]; then
-  backup="/usr/lib/omarchy-torguard/.backend.previous.$$"
-  mv /usr/lib/omarchy-torguard/backend "$backup"
+if [[ -d /usr/lib/omarchy-wireguard/backend ]]; then
+  backup="/usr/lib/omarchy-wireguard/.backend.previous.$$"
+  mv /usr/lib/omarchy-wireguard/backend "$backup"
 fi
-mv "$stage" /usr/lib/omarchy-torguard/backend
+mv "$stage" /usr/lib/omarchy-wireguard/backend
 stage=""
-install -m 0755 "$repo_dir/bin/omarchy-torguard" /usr/bin/omarchy-torguard
-install -m 0755 "$repo_dir/scripts/integrate-user" /usr/lib/omarchy-torguard/integrate-user
-install -m 0755 "$repo_dir/scripts/uninstall-backend" /usr/lib/omarchy-torguard/uninstall-backend
-install -m 0644 "$repo_dir/packaging/systemd/omarchy-torguard.service" /usr/lib/systemd/system/omarchy-torguard.service
-install -m 0644 "$repo_dir/packaging/systemd/omarchy-torguard-firewall.service" /usr/lib/systemd/system/omarchy-torguard-firewall.service
+install -m 0755 "$repo_dir/bin/omarchy-wireguard" /usr/bin/omarchy-wireguard
+install -m 0755 "$repo_dir/scripts/integrate-user" /usr/lib/omarchy-wireguard/integrate-user
+install -m 0755 "$repo_dir/scripts/uninstall-backend" /usr/lib/omarchy-wireguard/uninstall-backend
+install -m 0644 "$repo_dir/packaging/systemd/omarchy-wireguard.service" /usr/lib/systemd/system/omarchy-wireguard.service
+install -m 0644 "$repo_dir/packaging/systemd/omarchy-wireguard-firewall.service" /usr/lib/systemd/system/omarchy-wireguard-firewall.service
 
 config=$(mktemp)
 trap 'rm -f "$config"' EXIT
 printf 'CONTROLLER_UID=%s\n' "$controller_uid" >"$config"
-install -m 0600 "$config" /etc/omarchy-torguard/backend.conf
+install -m 0600 "$config" /etc/omarchy-wireguard/backend.conf
 
 systemctl daemon-reload
-systemd-analyze verify omarchy-torguard-firewall.service omarchy-torguard.service NetworkManager.service
+systemd-analyze verify omarchy-wireguard-firewall.service omarchy-wireguard.service NetworkManager.service
 # Reconcile policy with the new backend without stopping the firewall unit. A
 # restart would propagate to NetworkManager once its dependency drop-in exists.
-PYTHONPATH=/usr/lib/omarchy-torguard/backend \
-  /usr/bin/python3 -m omarchy_torguard.daemon --fail-closed
-systemctl enable --now omarchy-torguard-firewall.service
-systemctl enable omarchy-torguard.service
-systemctl restart omarchy-torguard.service
-systemctl is-active --quiet omarchy-torguard-firewall.service omarchy-torguard.service
+PYTHONPATH=/usr/lib/omarchy-wireguard/backend \
+  /usr/bin/python3 -m omarchy_wireguard.daemon --fail-closed
+systemctl enable --now omarchy-wireguard-firewall.service
+systemctl enable omarchy-wireguard.service
+systemctl restart omarchy-wireguard.service
+systemctl is-active --quiet omarchy-wireguard-firewall.service omarchy-wireguard.service
 
-install -m 0644 "$repo_dir/packaging/systemd/50-omarchy-torguard.conf" \
-  /etc/systemd/system/NetworkManager.service.d/50-omarchy-torguard.conf
+install -m 0644 "$repo_dir/packaging/systemd/50-omarchy-wireguard.conf" \
+  /etc/systemd/system/NetworkManager.service.d/50-omarchy-wireguard.conf
 systemctl daemon-reload
 
 if [[ -n $backup ]]; then
@@ -93,6 +93,6 @@ trap - ERR
 home=$(getent passwd "$controller_user" | cut -d: -f6)
 runuser -u "$controller_user" -- env HOME="$home" USER="$controller_user" \
   XDG_RUNTIME_DIR="/run/user/$controller_uid" OMARCHY_PATH=/usr/share/omarchy \
-  /usr/lib/omarchy-torguard/integrate-user install
+  /usr/lib/omarchy-wireguard/integrate-user install
 
-echo "TorGuard backend installed for $controller_user"
+echo "WireGuard backend installed for $controller_user"

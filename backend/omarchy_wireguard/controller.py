@@ -4,7 +4,7 @@ import ipaddress
 from dataclasses import replace
 from typing import Any, Callable
 
-from .constants import CITY_BUDGET, MAX_RETRY, PAUSE_SECONDS, PROFILE_PREFIX, TORGUARD_FWMARK
+from .constants import CITY_BUDGET, MAX_RETRY, PAUSE_SECONDS, PROFILE_PREFIX, WIREGUARD_FWMARK
 from .importer import ImportFailure, decode_payload, parse_profiles
 from .nftables import FirewallContext
 from .storage import StateStore
@@ -198,7 +198,7 @@ class Controller:
                 self.last_error = "selected city is unavailable after import"
                 self._fail_closed()
                 self._persist()
-                self._notify("failed", "Selected TorGuard city is no longer available; traffic remains blocked")
+                self._notify("failed", "Selected WireGuard location is no longer available; traffic remains blocked")
         elif self.enabled:
             self._schedule_connecting()
         return {"imported": True, "profiles": len(imported),
@@ -311,7 +311,7 @@ class Controller:
                 self.system.apply_firewall(base, remaining())
                 endpoints = self.system.resolve_endpoint(profile["endpoint_host"], profile["endpoint_port"], remaining())
                 self.system.apply_firewall(FirewallContext(
-                    endpoints=endpoints, torguard_fwmark=TORGUARD_FWMARK,
+                    endpoints=endpoints, wireguard_fwmark=WIREGUARD_FWMARK,
                     lan_prefixes=base.lan_prefixes,
                     lan_resolvers=base.lan_resolvers, resolver_uid=base.resolver_uid,
                     alfred_interface=base.alfred_interface,
@@ -326,7 +326,7 @@ class Controller:
                 base = self.system.configure_lan_dns(base, remaining())
                 connected_context = FirewallContext(
                     tunnel_interface=interface, endpoints=endpoints,
-                    torguard_fwmark=TORGUARD_FWMARK, lan_prefixes=base.lan_prefixes,
+                    wireguard_fwmark=WIREGUARD_FWMARK, lan_prefixes=base.lan_prefixes,
                     lan_resolvers=base.lan_resolvers, resolver_uid=base.resolver_uid,
                     alfred_interface=base.alfred_interface,
                     alfred_endpoints=base.alfred_endpoints, alfred_routes=base.alfred_routes,
@@ -387,7 +387,7 @@ class Controller:
         self.mode, self.last_error = "failed", reason
         self.retry_count += 1
         self.retry_at = self.clock() + min(MAX_RETRY, 2 ** min(self.retry_count, 9))
-        self._notify("failed", "TorGuard connection failed; traffic remains blocked")
+        self._notify("failed", "WireGuard connection failed; traffic remains blocked")
 
     def _emergency_disconnect(self) -> None:
         if self.interface:

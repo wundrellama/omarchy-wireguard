@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "nicolasdorier.torguard"
+  moduleName: "nicolasdorier.wireguard"
   ipcTarget: moduleName
   manageIpc: false
 
@@ -213,8 +213,8 @@ Panel {
           PanelHero {
             width: parent.width
             title: service.status.state === "connecting" || service.status.state === "failed" || service.status.state === "paused"
-              ? (service.status.targetLocation || "TorGuard")
-              : (service.status.location || service.status.targetLocation || "TorGuard")
+              ? (service.status.targetLocation || "WireGuard")
+              : (service.status.location || service.status.targetLocation || "WireGuard")
             meta: root.stateLabel
             detail: service.status.countdown ? Model.countdownText(service.status.countdown) : ""
             foreground: root.foreground
@@ -250,8 +250,8 @@ Panel {
             Text {
               width: parent.width
               text: service.status.installed
-                ? "Generate one WireGuard location at a time, then import each profile or a directory of profiles."
-                : "Install the privileged TorGuard backend first. The TorGuard generator is confirmed to export one WireGuard location at a time."
+                ? "Import compatible WireGuard profiles individually, as a directory, or as a ZIP."
+                : "Install the privileged WireGuard backend first, then import a compatible WireGuard profile."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -260,7 +260,7 @@ Panel {
             Row {
               spacing: Style.space(6)
               Button { visible: !service.status.installed; enabled: !service.busy && service.installScriptPath !== ""; focusable: true; text: "Install backend"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.installBackend() }
-              Button { focusable: true; text: "Open WireGuard generator"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.openGenerator() }
+              Button { focusable: true; text: "Open TorGuard generator"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.openGenerator() }
             }
           }
 

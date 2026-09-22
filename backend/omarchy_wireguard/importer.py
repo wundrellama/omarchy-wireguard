@@ -235,6 +235,7 @@ def _location(value: object) -> str:
 
 
 def infer_location(name: str, endpoint: str) -> tuple[str, str]:
+    # TorGuard assumption: infer location from country/city tokens in filenames and endpoint hosts.
     tokens = [token for token in re.split(r"[^a-z0-9]+", f"{name} {endpoint}".lower()) if token]
     countries = [(index, COUNTRY_CODES[token]) for index, token in enumerate(tokens) if token in COUNTRY_CODES]
     if len({country for _, country in countries}) != 1:
@@ -276,13 +277,13 @@ def parse_config(name: str, text: str) -> Profile:
     if not addresses:
         raise ImportFailure(f"{name}: missing interface address")
     if "DNS" not in interface:
-        raise ImportFailure(f"{name}: missing TorGuard DNS server")
+        raise ImportFailure(f"{name}: missing DNS server")
     try:
         dns_servers = [str(ipaddress.ip_address(item.strip())) for item in interface["DNS"].split(",")]
     except ValueError as exc:
         raise ImportFailure(f"{name}: invalid DNS server") from exc
     if not dns_servers:
-        raise ImportFailure(f"{name}: missing TorGuard DNS server")
+        raise ImportFailure(f"{name}: missing DNS server")
     allowed_text = peer.get("AllowedIPs", "")
     try:
         allowed = [ipaddress.ip_network(item.strip(), strict=False) for item in allowed_text.split(",") if item.strip()]

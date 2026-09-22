@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import patch
 
-from omarchy_torguard.daemon import _handle_connection, reconcile_early_firewall
-from omarchy_torguard.nftables import FirewallContext
-from omarchy_torguard.protocol import ProtocolError
+from omarchy_wireguard.daemon import _handle_connection, reconcile_early_firewall
+from omarchy_wireguard.nftables import FirewallContext
+from omarchy_wireguard.protocol import ProtocolError
 
 
 class Store:
@@ -53,9 +53,9 @@ class EarlyFirewallTests(unittest.TestCase):
             self.assertEqual((system.removed, system.applied), (0, 1))
 
     def test_protocol_rejection_ignores_disconnected_client(self):
-        with patch("omarchy_torguard.daemon.peer_credentials",
+        with patch("omarchy_wireguard.daemon.peer_credentials",
                    side_effect=ProtocolError("bad peer")), patch(
-                       "omarchy_torguard.daemon.send_response", side_effect=BrokenPipeError):
+                       "omarchy_wireguard.daemon.send_response", side_effect=BrokenPipeError):
             _handle_connection(object(), object(), 1000)
 
 

@@ -1,18 +1,18 @@
 [Unit]
-Description=Omarchy TorGuard privileged control daemon
-Requires=omarchy-torguard-firewall.service NetworkManager.service
-After=omarchy-torguard-firewall.service NetworkManager.service
+Description=Omarchy WireGuard privileged control daemon
+Requires=omarchy-wireguard-firewall.service NetworkManager.service
+After=omarchy-wireguard-firewall.service NetworkManager.service
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/omarchy-torguard/backend.conf
-Environment=PYTHONPATH=/usr/lib/omarchy-torguard/backend
-ExecStart=/usr/bin/python3 -m omarchy_torguard.daemon --controller-uid=${CONTROLLER_UID}
+EnvironmentFile=/etc/omarchy-wireguard/backend.conf
+Environment=PYTHONPATH=/usr/lib/omarchy-wireguard/backend
+ExecStart=/usr/bin/python3 -m omarchy_wireguard.daemon --controller-uid=${CONTROLLER_UID}
 Restart=on-failure
 RestartSec=2
-RuntimeDirectory=omarchy-torguard
+RuntimeDirectory=omarchy-wireguard
 RuntimeDirectoryMode=0755
-StateDirectory=omarchy-torguard
+StateDirectory=omarchy-wireguard
 StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes

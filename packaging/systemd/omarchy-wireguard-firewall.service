@@ -1,5 +1,5 @@
 [Unit]
-Description=Omarchy TorGuard early fail-closed firewall
+Description=Omarchy WireGuard early fail-closed firewall
 DefaultDependencies=no
 Before=network-pre.target NetworkManager.service
 Wants=network-pre.target
@@ -7,9 +7,9 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -m omarchy_torguard.daemon --fail-closed
+ExecStart=/usr/bin/python3 -m omarchy_wireguard.daemon --fail-closed
 RemainAfterExit=yes
-Environment=PYTHONPATH=/usr/lib/omarchy-torguard/backend
+Environment=PYTHONPATH=/usr/lib/omarchy-wireguard/backend
 CapabilityBoundingSet=CAP_NET_ADMIN
 NoNewPrivileges=yes
 ProtectSystem=strict
