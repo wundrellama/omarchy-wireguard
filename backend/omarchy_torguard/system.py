@@ -76,10 +76,9 @@ class HostSystem:
                              "connection.autoconnect", "no",
                              "connection.permissions", permissions,
                              "wireguard.fwmark", str(TORGUARD_FWMARK),
-                             "ipv4.never-default", "no", "ipv6.never-default", "no",
+                             "ipv4.never-default", "no",
                              "ipv4.dns-priority", str(TORGUARD_DNS_PRIORITY),
-                             "ipv6.dns-priority", str(TORGUARD_DNS_PRIORITY),
-                             "ipv4.dns-search", "~.", "ipv6.dns-search", "~."])
+                             "ipv4.dns-search", "~."])
             return uuid
         except Exception:
             if uuid is not None:
@@ -122,8 +121,7 @@ class HostSystem:
         self.runner.run(["nmcli", "connection", "modify", "uuid", uuid,
                          "wireguard.fwmark", str(TORGUARD_FWMARK),
                          "ipv4.dns-priority", str(TORGUARD_DNS_PRIORITY),
-                         "ipv6.dns-priority", str(TORGUARD_DNS_PRIORITY),
-                         "ipv4.dns-search", "~.", "ipv6.dns-search", "~."],
+                         "ipv4.dns-search", "~."],
                         timeout=min(2, remaining()))
         activation_timeout = remaining()
         self.runner.run(["nmcli", "--wait", str(max(1, int(activation_timeout))),

@@ -178,7 +178,8 @@ class SystemTests(unittest.TestCase):
         self.assertIn("ipv4.dns-search", modify)
         self.assertIn("~.", modify)
         self.assertEqual(modify[modify.index("ipv4.dns-priority") + 1], "10")
-        self.assertEqual(modify[modify.index("ipv6.dns-priority") + 1], "10")
+        self.assertNotIn("ipv6.dns-priority", modify)
+        self.assertNotIn("ipv6.dns-search", modify)
         self.assertNotIn("-100", modify)
         self.assertIn("user:" + pwd.getpwuid(os.getuid()).pw_name, modify)
 
@@ -186,8 +187,7 @@ class SystemTests(unittest.TestCase):
         uuid = "00000000-0000-0000-0000-000000000001"
         modify = ("nmcli", "connection", "modify", "uuid", uuid,
                   "wireguard.fwmark", str(0x6F7467),
-                  "ipv4.dns-priority", "10", "ipv6.dns-priority", "10",
-                  "ipv4.dns-search", "~.", "ipv6.dns-search", "~.")
+                  "ipv4.dns-priority", "10", "ipv4.dns-search", "~.")
         class ActivationRunner:
             def __init__(self):
                 self.calls = []
