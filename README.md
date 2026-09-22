@@ -81,11 +81,3 @@ node --test tests/plugin/model.test.js
 omarchy plugin validate .
 qmllint -I /usr/share/omarchy/shell plugin/BarWidget.qml plugin/Service.qml
 ```
-
-## Trademarks
-
-This project is not affiliated with, sponsored by, or endorsed by TorGuard or
-Omarchy. TorGuard and related marks belong to their respective owner. The
-TorGuard generator link is an optional convenience, not a project dependency.
-"WireGuard" and the "WireGuard" logo are registered trademarks of Jason A.
-Donenfeld.
