@@ -10,7 +10,7 @@ import "Traffic.js" as Traffic
 
 Panel {
   id: root
-  moduleName: "nicolasdorier.wireguard"
+  moduleName: "wundrellama.wireguard"
   ipcTarget: moduleName
   manageIpc: false
 
