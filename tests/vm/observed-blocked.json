@@ -1,0 +1,52 @@
+{
+  "passed": false,
+  "qemu_exit": 0,
+  "timed_out": false,
+  "guest_exit_markers": [
+    "VM_GUEST_EXIT=1"
+  ],
+  "assertion_count": 1,
+  "result": [
+    {
+      "ok": false,
+      "guest_exit": 1,
+      "assertions": [
+        "actual systemd PID1"
+      ],
+      "error": "('systemctl', 'start', 'dbus.service', 'systemd-resolved.service', 'NetworkManager.service'): exit 5"
+    }
+  ],
+  "serial_log": "/home/michael/.hermes/cache/scratch/wg-vm-run1/serial.log",
+  "snapshot_hashes": "/home/michael/.hermes/cache/scratch/wg-vm-run1/snapshot-sha256.json",
+  "command": [
+    "/home/michael/.hermes/cache/scratch/systemd-vm.TFMS0A/qemu/usr/bin/qemu-system-x86_64",
+    "-L",
+    "/home/michael/.hermes/cache/scratch/systemd-vm.TFMS0A/qemu/usr/share/qemu",
+    "-bios",
+    "/home/michael/.hermes/cache/scratch/systemd-vm.TFMS0A/qemu/usr/share/qemu/bios-256k.bin",
+    "-machine",
+    "q35,accel=kvm",
+    "-cpu",
+    "host",
+    "-m",
+    "1536M",
+    "-smp",
+    "2",
+    "-nodefaults",
+    "-no-reboot",
+    "-display",
+    "none",
+    "-serial",
+    "stdio",
+    "-monitor",
+    "none",
+    "-nic",
+    "none",
+    "-kernel",
+    "/usr/lib/modules/7.2.5-4-omarchy/vmlinuz",
+    "-initrd",
+    "/home/michael/.hermes/cache/scratch/wg-vm-run1/initramfs.cpio.gz",
+    "-append",
+    "console=ttyS0 rdinit=/init panic=-1 loglevel=4 systemd.log_level=info systemd.log_target=console systemd.show_status=1"
+  ]
+}
