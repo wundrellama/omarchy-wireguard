@@ -130,6 +130,16 @@ DNS queries, and browsing destinations.
 
 ## Development
 
+Run the fast checks with the same command as GitHub Actions:
+
+```bash
+./tests/fast
+```
+
+See [fast CI checks](docs/CI.md) for dependencies, logs, and coverage limits. The fast workflow excludes real networking, systemd VM, and Quickshell tests.
+
+Run individual suites or additional desktop checks as needed:
+
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend python3 -m unittest discover -s tests/backend -v
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/cli -v
