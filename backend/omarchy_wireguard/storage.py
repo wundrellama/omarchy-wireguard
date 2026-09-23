@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import Any
 
 
+class StateCommitError(OSError):
+    """The rename succeeded, but durability could not be confirmed."""
+
+    committed = True
+
+
 class StateStore:
     def __init__(self, root: Path, owner_uid: int = 0):
         self.root = root
@@ -35,6 +41,7 @@ class StateStore:
         self.prepare()
         path = self._path(name)
         fd, temporary = tempfile.mkstemp(prefix=f".{name}.", dir=self.root)
+        committed = False
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -44,11 +51,16 @@ class StateStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
+            committed = True
             directory_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
+        except OSError as exc:
+            if committed:
+                raise StateCommitError("state committed but durability could not be confirmed") from exc
+            raise
         finally:
             if fd >= 0:
                 os.close(fd)

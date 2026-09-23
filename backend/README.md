@@ -19,15 +19,18 @@ base64 `data` plus `name`.
 Profiles must have one `Interface`, one `Peer`, DNS, an IPv4 default
 `AllowedIPs` route, only supported keys, and no hooks. This does not guarantee
 compatibility with profiles from every provider.
-Ambiguous locations return `review_required`; resubmit with a `locations`
-object keyed by source filename. Secrets are passed directly to NetworkManager
-through mode-0600 temporary files and are not retained in backend metadata.
+Ambiguous locations return `review_required`; resubmit with a `locations` object keyed by source filename, or supply a `labels` object for named personal profiles. A label permits missing geography but does not permit split-tunnel routes. Labels must be nonempty printable text of at most 128 characters.
+
+Imports are additive. Duplicate source names within a batch or against the catalog are rejected before any NetworkManager changes. Existing profiles and active connections are preserved. New profiles are staged, then the combined catalog is persisted before publication in memory. Pre-commit failure cleans up only the new profiles; incomplete cleanup is reported. A post-rename durability error is reported as committed-but-unconfirmed and does not delete profiles referenced by the catalog. NetworkManager and filesystem changes are not crash-atomic; orphan reconciliation is a follow-up.
+
+`list` includes a flat `profiles` array with stable IDs, labels and the `internet-exit` role, alongside legacy `cities`. `connect` accepts exactly one of `{"profile":"<id>"}` or `{"city":"Country/City"}`. Exact-profile selection persists as `profile:<id>` and never falls back to another profile in that city. `status.target_profile` describes an exact-profile target. Update, replacement, removal and private-network roles are not supported yet.
+
+Secrets are passed directly to NetworkManager through mode-0600 temporary files and are not retained in backend metadata.
 
 The optional import `network` object configures exact `lan_resolvers` and an
 `alfred` object containing the literal `alfred-vpn` interface, IP/UDP endpoint
 pairs, and routed prefixes. Hostnames and implicit routes are rejected. This
-policy is persisted for the early-boot firewall; omitting it preserves the
-existing policy.
+policy is persisted for the early-boot firewall; omitting it preserves the existing policy. A differing policy is rejected before import effects whenever VPN intent is enabled (including connecting, failed and paused states). Disconnect first to change network policy; additive imports must not acknowledge a policy that the active firewall has not adopted.
 
 Disabled and paused modes remove only the backend's nftables table. Enabled
 connecting or failed modes retain fail-closed filtering. At boot, missing or
