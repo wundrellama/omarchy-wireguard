@@ -7,6 +7,11 @@ Item {
   id: root
 
   property bool active: true
+  readonly property var traffic: trafficService.traffic
+  TrafficService {
+    id: trafficService
+    profile: root.active && root.status.state === "connected" ? (root.status.currentProfile || "") : ""
+  }
   property double lastStatusAt: 0
   property int statusRevision: 0
   property bool disconnectRecovery: false
@@ -37,6 +42,7 @@ Item {
   property var importPaths: []
 
   signal actionFinished(string action, bool success)
+  signal importSelectionFinished()
 
   function intSetting(name, fallback, min, max) {
     var value = settings && settings[name] !== undefined ? settings[name] : fallback
@@ -377,12 +383,22 @@ Item {
       if (exitCode === 1) return
       if (exitCode !== 0) {
         root.actionError = String(pickerStderr.text || "File chooser failed").trim()
+        root.importSelectionFinished()
         return
       }
       var paths = String(pickerStdout.text || "").split("\n").filter(function(path) { return path !== "" })
       if (paths.length === 0) return
-      root.importPaths = paths
-      root.runAction("Importing profiles", ["import"].concat(paths))
+      // Quickshell emits exited before runningChanged. Starting synchronously
+      // here would be silently rejected because busy still includes the picker.
+      Qt.callLater(function() {
+        if (!root.active) return
+        root.importPaths = paths
+        if (root.busy || root.status.state === "unknown")
+          root.actionError = "Cannot import while busy or status is unknown; refresh and try again"
+        else
+          root.runAction("Importing profiles", ["import"].concat(paths))
+        root.importSelectionFinished()
+      })
     }
   }
 

@@ -27,7 +27,7 @@ ctx.statusKnown=true; ctx.service.busy=true; activate.call(ctx); assert.equal(ca
 // Evaluate the actual bootstrap section/button bindings, not a replacement UI.
 // Bootstrap actions must wrap: the longer repair label overflows a fixed Row.
 assert.match(panel,/Flow \{\s+width: parent.width\s+spacing: Style.space\(6\)\s+Button \{ visible: !root.statusKnown/)
-const setup=panel.match(/Column \{\s+visible: ([^\n]+)[\s\S]*?text: "GET STARTED"/)[1]
+const setup=panel.match(/Column \{\s+visible: ([^\n]+)\s+width: parent.width\s+spacing: Style.space\(8\)\s+PanelSectionHeader \{ text: "GET STARTED"/)[1]
 const install=panel.match(/Button \{ visible: ([^;]+); enabled: ([^;]+);[^\n]+onClicked: service.installBackend\(\)/)
 const bootstrap={statusKnown:false,service:{status:{installed:null,setupRequired:false},busy:false,active:true,installScriptPath:'/not/executed',currentUser:'tester'}}
 const evaluate=expression=>new Function('root','service','return '+expression)(bootstrap,bootstrap.service)
@@ -62,3 +62,21 @@ assert.equal(batchKey(JSON.parse(JSON.stringify(firstBatch))),key)
 assert.notEqual(batchKey({importPaths:['/travel.zip'],status:{importReview:{candidates:['travel.conf']}}}),key)
 assert.match(panel,/onReviewBatchKeyChanged: reviewValues = \(\{\}\)/)
 console.log('panel contract and selection tests passed')
+// Selecting a file must restore the panel dismissed by the external chooser.
+const returned = panel.match(/function onImportSelectionFinished\(\) \{([^}]+)\}/)
+assert.ok(returned, 'picker completion must reopen the import review panel')
+let reopened = 0
+new Function('root', returned[1])({open(){reopened++}})
+assert.equal(reopened, 1)
+// Shields share the existing status palette; only connected gets a check mark.
+const glyph = panel.match(/readonly property string stateGlyph: ([^\n]+)/)
+assert.ok(glyph, 'status indicator uses a shield glyph')
+const colorBody = panel.match(/readonly property color stateColor: \{([\s\S]*?)\n  \}/)[1]
+for (const [state, color] of [['connected','green'],['connecting','yellow'],['failed','red'],['enabled-unverified','red'],['disabled','muted'],['unknown','muted'],['paused','muted']]) {
+  const service = {status:{state}}
+  assert.equal(new Function('service', 'return '+glyph[1])(service),
+    String.fromCodePoint(state === 'connected' ? 0xF0565 : 0xF0498))
+  assert.equal(new Function('service','success','warning','errorColor','dim',colorBody)(service,'green','yellow','red','muted'),color)
+}
+assert.match(panel, /text: root.stateGlyph\s+foreground: root.stateColor/)
+assert.match(panel, /text: root.stateGlyph\s+color: root.stateColor/)

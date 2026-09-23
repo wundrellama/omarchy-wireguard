@@ -13,6 +13,9 @@ Vpn.BarWidget {
   QtObject {
     id: fixture
     property var settings: ({})
+    // Deliberately synthetic: no sampler runs when serviceOverride is injected.
+    readonly property var traffic: status.state === "connected"
+      ? ({rx: 15728640, tx: 2097152, down: 131072, up: 16384}) : null
     property bool active: false
     property string currentUser: ""
     property bool panelOpen: false
@@ -28,6 +31,7 @@ Vpn.BarWidget {
     readonly property bool transitioning: status.state === "connecting"
     readonly property var filteredLocations: Model.filterLocations(status.locations || [], query)
     signal actionFinished(string action, bool success)
+    signal importSelectionFinished()
 
     readonly property var catalog: Model.parseCatalog(JSON.stringify({ok: true, result: {
       profiles: [
@@ -81,6 +85,12 @@ Vpn.BarWidget {
     target: "wundrellama.wireguard-preview-controls"
     function scenario(mode: string): string { fixture.scenario(mode); return "ok" }
     function review(): string { fixture.chooseImport(); return "ok" }
+    function pickerReturned(): string {
+      preview.close()
+      fixture.chooseImport()
+      fixture.importSelectionFinished()
+      return "picker-return-v1"
+    }
     function label(value: string): string { preview.setReviewValue("example.conf", value); return "ok" }
     function submit(): string { preview.submitReview(); return fixture.lastAction }
     function search(value: string): string { fixture.query = value; return "ok" }

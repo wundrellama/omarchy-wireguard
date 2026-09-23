@@ -6,6 +6,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "Traffic.js" as Traffic
 
 Panel {
   id: root
@@ -15,6 +16,7 @@ Panel {
 
   property var serviceOverride: null
   readonly property var service: serviceOverride || liveService
+  readonly property var traffic: service.status.state === "connected" ? (service.traffic || null) : null
   readonly property bool statusKnown: service.status.state !== "unknown" && service.status.ok !== false
   property int selectedIndex: 0
   property bool cursorActive: false
@@ -32,8 +34,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var locations: service.filteredLocations
 
-  readonly property string statusCountryCode: Model.statusCountryCode(service.status)
-  readonly property bool showCountryFlag: service.status.state !== "disabled" && statusCountryCode !== ""
+  // Material shield / shield-check, matching the omarchy-vpn addon.
+  readonly property string stateGlyph: String.fromCodePoint(service.status.state === "connected" ? 0xF0565 : 0xF0498)
   readonly property color stateColor: {
     if (service.status.state === "connected") return success
     if (service.status.state === "connecting") return warning
@@ -139,6 +141,7 @@ Panel {
 
   Connections {
     target: service
+    function onImportSelectionFinished() { root.open() }
     function onActionFinished(action, success) {
       if (!success && root.opened) Qt.callLater(function() { search.forceActiveFocus() })
     }
@@ -159,39 +162,9 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: Model.tooltip(service.status)
-    iconComponent: Component {
-      Item {
-        Text {
-          visible: root.showCountryFlag
-          anchors.centerIn: parent
-          text: Model.countryFlag(root.statusCountryCode)
-          font.family: root.fontFamily
-          font.pixelSize: Style.bar.iconFont
-        }
-        Rectangle {
-          visible: !root.showCountryFlag
-          anchors.centerIn: parent
-          width: Style.space(7)
-          height: width
-          radius: width / 2
-          color: service.status.state === "disabled" || service.status.state === "paused" ? "transparent" : root.stateColor
-          border.width: service.status.state === "disabled" || service.status.state === "paused" ? Math.max(1, Style.space(1)) : 0
-          border.color: root.stateColor
-        }
-        Rectangle {
-          visible: root.showCountryFlag
-          anchors.top: parent.top
-          anchors.right: parent.right
-          width: Style.space(6)
-          height: width
-          radius: width / 2
-          color: service.status.state === "paused" ? "transparent" : root.stateColor
-          border.width: service.status.state === "paused" ? Math.max(1, Style.space(1)) : 0
-          border.color: root.stateColor
-        }
-      }
-    }
+    tooltipText: Model.tooltip(service.status) + (service.status.state === "connected" ? "\n" + Traffic.summary(root.traffic) : "")
+    text: root.stateGlyph
+    foreground: root.stateColor
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()
     }
@@ -240,14 +213,38 @@ Panel {
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
-              Rectangle {
-                width: Style.font.display * 0.55
-                height: width
-                radius: width / 2
-                color: service.status.state === "disabled" || service.status.state === "paused" ? "transparent" : root.stateColor
-                border.width: service.status.state === "disabled" || service.status.state === "paused" ? Math.max(1, Style.space(2)) : 0
-                border.color: root.stateColor
+              Text {
+                text: root.stateGlyph
+                color: root.stateColor
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
               }
+            }
+          }
+
+          Column {
+            visible: service.status.state === "connected"
+            width: parent.width
+            spacing: Style.space(5)
+            PanelSectionHeader { text: "INTERFACE TRAFFIC"; foreground: root.foreground; fontFamily: root.fontFamily }
+            Text {
+              width: parent.width
+              text: "Download ↓ " + Traffic.formatBytes(root.traffic ? root.traffic.down : null) + "/s"
+                + "    Upload ↑ " + Traffic.formatBytes(root.traffic ? root.traffic.up : null) + "/s"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: root.traffic
+                ? "Received " + Traffic.formatBytes(root.traffic.rx) + " · Sent " + Traffic.formatBytes(root.traffic.tx) + "\nSince interface creation"
+                : "Traffic unavailable · waiting for interface counters"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
             }
           }
 
