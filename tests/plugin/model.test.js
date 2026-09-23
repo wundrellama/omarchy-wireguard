@@ -85,7 +85,7 @@ vm.runInContext(source, model)
   assert.equal(merged.locations[0].target, true)
   assert.ok(merged.countdown >= 599 && merged.countdown <= 600)
   assert.equal(merged.reason, "")
-  assert.match(model.tooltip(merged), /Resumes in:/)
+  assert.match(model.tooltip(merged), /Pause timer \(not a protection guarantee\):/)
 }
 
 {
@@ -121,4 +121,68 @@ vm.runInContext(source, model)
   assert.equal(model.shouldDisconnectLocation(locations[0], "connected"), true)
 }
 
+{
+  const catalog = model.parseCatalog(JSON.stringify({ profiles: [
+    { id: "personal", label: "Personal VPN", role: "internet-exit", source_name: "home.conf" },
+    { id: "work", label: "Office exit", role: "internet-exit", source_name: "office.conf", country: "Japan", city: "Tokyo" }
+  ], cities: [{ id: "Ignored/City" }] }))
+  assert.equal(catalog.locations.length, 2)
+  assert.equal(catalog.locations[0].label, "Office exit")
+  assert.equal(catalog.locations[0].role, "internet-exit")
+  for (const query of ["personal", "home.conf"]) assert.equal(model.filterLocations(catalog.locations, query)[0].id, "personal")
+  assert.equal(model.filterLocations(catalog.locations, "Japan")[0].id, "work")
+  assert.deepEqual(Array.from(model.connectArgs(catalog.locations[0])), ["connect", "--profile", "work"])
+  assert.deepEqual(Array.from(model.connectArgs({ id: "Japan/Tokyo", kind: "city" })), ["connect", "Japan/Tokyo"])
+  assert.equal(model.parseCatalog('{"profiles":[],"cities":[{"id":"Old/City"}]}').locations.length, 0)
+}
+
+{
+  for (const raw of ['no json', '{}', 'null', '[]', '{"ok":true}', '{"mode":"mystery"}', '{"enabled":true}']) {
+    const status = model.parseStatus(raw)
+    assert.equal(status.state, 'unknown', raw)
+    assert.equal(status.ok, false, raw)
+    assert.notEqual(status.enabled, false, raw)
+  }
+  assert.equal(model.parseStatus('{"mode":"connected","enabled":true}').state, 'connected')
+  assert.equal(model.parseStatus('{"mode":"connected","enabled":true,"verified":false}').state, 'enabled-unverified')
+  assert.equal(model.parseStatus('{"mode":"connected","enabled":false}').state, 'unknown')
+  assert.equal(model.parseStatus('{"mode":"disabled","enabled":false}').state, 'disabled')
+  const catalog = model.parseCatalog('{"profiles":[{"id":"a","label":"Home","role":"internet-exit"},{"id":"b","label":"Other","role":"internet-exit"}]}')
+  const connected = model.mergeStatusCatalog(model.parseStatus('{"mode":"connected","enabled":true,"current_profile":"a","current":{"id":"a","label":"Home"},"target":"profile:a"}'), catalog)
+  assert.equal(connected.location, 'Home')
+  assert.equal(connected.locations[0].target, true)
+  assert.equal(connected.locations[0].current, true)
+  const unknown = model.mergeStatusCatalog(model.parseStatus('{}'), catalog)
+  assert.ok(unknown.locations.every(item => !item.current && !item.target))
+  assert.equal(model.shouldDisconnectLocation(connected.locations[0], 'unknown'), false)
+  assert.equal(model.statusCountryCode({state:'unknown',locations:[{current:true,countryCode:'JP'}]}), '')
+}
+
+{
+  assert.deepEqual(Array.from(model.importReviewArgs(['/a.zip'], {'home.conf':'Personal VPN'})), ['import','/a.zip','--labels','{"home.conf":"Personal VPN"}'])
+  assert.equal(model.validLabel('  '), false)
+  assert.equal(model.validLabel('a\n'), false)
+  assert.equal(model.validLabel('x'.repeat(129)), false)
+  assert.equal(model.validLabel('Personal VPN'), true)
+  assert.equal(model.reviewComplete(['home.conf'], {'home.conf':'Personal VPN'}), true)
+  assert.equal(model.reviewComplete(['home.conf'], {}), false)
+}
+
+{
+  const status = model.parseStatus('{"mode":"connected","enabled":true,"current_profile":"a","current":{"id":"a","label":"Home"},"target":"profile:b"}')
+  assert.equal(model.mergeStatusCatalog(status, {locations:[]}).location,'Home')
+  const catalog = model.parseCatalog('{"profiles":[{"id":"a","label":"Home","role":"internet-exit"},{"id":"b","label":"Work","role":"internet-exit"}]}')
+  const merged = model.mergeStatusCatalog(status,catalog)
+  assert.equal(merged.locations.filter(x=>x.current).length,1)
+  assert.equal(merged.targetLabel,'Work')
+}
+
+for (const mode of ['disabled','down','offline']) {
+  for (const verified of [true,false]) {
+    const contradictory=model.parseStatus(JSON.stringify({mode,enabled:true,verified}))
+    assert.equal(contradictory.state,'unknown')
+    assert.equal(contradictory.ok,false)
+    assert.equal(contradictory.enabled,null)
+  }
+}
 console.log("model tests passed")
