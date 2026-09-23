@@ -2,12 +2,47 @@
 
 A WireGuard integration for Omarchy 4.x.
 
-> **Development fork — not ready to replace the installed VPN plugins.** This branch adds safe additive imports and a named full-tunnel profile panel with conservative unknown-status handling. Split/private-network tunnels and Proton integration are not implemented yet. See [the adaptation roadmap and deployment gates](docs/ADAPTATION.md). The install command below targets this fork's default branch; it does not select `feature/personal-vpn-profiles` or imply deployment approval for this development branch. Use the [non-networking preview](tests/preview/README.md) to evaluate the panel without installing the backend.
+Maintained by **wundrellama**, based on Nicolas Dorier's original omarchy-wireguard. The original MIT copyright and license are retained in [LICENSE](LICENSE).
 
-It adds a status dot beside the Network widget and a searchable location panel.
-Green means the tunnel, default route, DNS, IPv6 policy, and recent WireGuard
-handshake are verified. Amber means connecting, red means enabled but failed,
-and a muted hollow dot means disabled or temporarily paused.
+> **Development fork.** This plugin supports named full-tunnel WireGuard profiles. It does not support private-network split tunnels or Proton integration. Keep your existing VPN plugins until you test the replacement. See the [roadmap and deployment limits](docs/ADAPTATION.md). The [panel preview](tests/preview/README.md) uses synthetic profiles and does not change networking.
+
+## Panel and status shield
+
+The bar shows a shield. Click the shield to open the profile panel.
+
+| Icon | State |
+| --- | --- |
+| Green check-shield | Connected. The backend checks pass. |
+| Amber shield | Connecting. |
+| Red shield | Failed or unverified. |
+| Muted shield | Disabled, paused, or unknown. Read the panel for the exact state. |
+
+The backend checks the tunnel interface, firewall policy, default route, Domain Name System (DNS) configuration, IPv6 policy, and recent WireGuard handshake. Missing, stale, or contradictory status appears as unknown. A green icon reports these checks, not proof of every possible traffic path.
+
+The panel supports these actions:
+
+- Search profiles by name, source file, city, or country.
+- Connect a selected profile or disconnect the current profile.
+- Import individual files, a directory, or a ZIP archive.
+- Review display labels before an ambiguous import.
+- Retry a failed connection or copy diagnostics.
+
+Imports add profiles without replacing existing profiles. The file chooser returns to the panel for label review when required. The panel does not offer timed pause.
+
+## Traffic display
+
+While connected, the panel and shield tooltip show:
+
+| Measurement | Meaning |
+| --- | --- |
+| Download / upload | Current receive and transmit rates, in B/s, KiB/s, or MiB/s. |
+| Received / sent | Total bytes through the current tunnel interface. |
+
+The sampler reads counters once per second. Totals start when the tunnel interface is created. They do not reset when you close the panel. Recreating the interface resets its totals. The plugin does not store lifetime totals across connections.
+
+The first sample shows `—/s` until a second sample establishes a rate. Missing or stale samples show unavailable values, not zero traffic. A real idle sample shows `0 B/s`. Disconnecting hides the traffic section.
+
+The bar remains shield-only. The sampler needs no root access and does not change the connection. Traffic counters do not prove VPN protection. See [traffic behavior and tests](docs/TRAFFIC.md).
 
 ## Install
 
@@ -15,13 +50,15 @@ and a muted hollow dot means disabled or temporarily paused.
 omarchy plugin add https://github.com/wundrellama/omarchy-wireguard.git --enable
 ```
 
-Click the new bar dot, choose **Install backend** (or **Install / repair backend** when status is unknown), and authorize the Polkit
-prompt. The installer adds `wireguard-tools`, a narrowly scoped root service,
-and a dedicated nftables kill-switch table without changing UFW rules.
+1. Click the bar shield.
+2. Choose **Install backend** or **Install / repair backend** when status is unknown.
+3. Authorize the Polkit prompt.
+
+The installer adds `wireguard-tools`, a root service, and a dedicated nftables kill-switch table. It does not change Uncomplicated Firewall (UFW) rules.
 
 Import compatible `.conf` files, a directory, or a ZIP; the development panel displays each named profile, with optional geography. **Open TorGuard generator** is an optional convenience for TorGuard customers and opens that provider's public generator.
 
-On this development branch, installation remains an explicit user action; an unavailable status response never triggers installation automatically. A disconnected backend is shown as unknown, not as proof that VPN protection is disabled. The named panel lists profile labels rather than requiring a city.
+Installation requires an explicit user action. An unavailable status response never starts installation automatically. An unreachable backend appears as unknown, not as proof that VPN protection is disabled. Profiles need display labels, not city names.
 
 Accepted profiles must contain exactly one `Interface` followed by one `Peer`,
 include DNS and the IPv4 default route in `AllowedIPs`, use only the supported
@@ -48,7 +85,7 @@ omarchy-wireguard import ~/Downloads/tokyo.conf ~/Downloads/singapore.conf
 omarchy-wireguard diagnostics
 ```
 
-### Named profiles (development branch)
+### Named profiles
 
 Import a full-tunnel profile with a display name instead of assigning it a country/city, then use the stable ID returned by `list`:
 
@@ -74,7 +111,7 @@ sudo omarchy-wireguard emergency-disable
 
 ```bash
 sudo /usr/lib/omarchy-wireguard/uninstall-backend "$USER"
-omarchy plugin remove nicolasdorier.wireguard
+omarchy plugin remove wundrellama.wireguard
 ```
 
 This removes plugin-owned profiles, services, firewall state, and menu
