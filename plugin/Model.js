@@ -17,13 +17,14 @@ function text(value) {
 
 function normalizeState(value, enabled, verified, paused) {
   var state = text(value).trim().toLowerCase().replace(/[ _]+/g, "-")
+  if (enabled === true && (state === "disabled" || state === "down" || state === "offline")) return "unknown"
   if (paused || state === "pause" || state === "paused") return "paused"
-  if (state === "up" || state === "online" || state === "connected") return "connected"
+  if (state === "up" || state === "online" || state === "connected") return enabled === false ? "unknown" : (verified === false ? "enabled-unverified" : "connected")
   if (state === "connecting" || state === "disconnecting" || state === "retrying") return "connecting"
   if (state === "failed" || state === "failure" || state === "error") return "failed"
   if (state === "enabled-unverified" || (enabled && verified === false)) return "enabled-unverified"
-  if (state === "disabled" || state === "down" || state === "offline" || !enabled) return "disabled"
-  return state || "disabled"
+  if (state === "disabled" || state === "down" || state === "offline" || (state === "" && enabled === false)) return "disabled"
+  return "unknown"
 }
 
 function normalizeLocation(value) {
@@ -42,28 +43,35 @@ function normalizeLocation(value) {
   }
 }
 
+function unknownStatus(message) {
+  return { ok: false, installed: null, setupRequired: false, enabled: null, verified: false,
+    state: "unknown", message: message || "Status unavailable", reason: message || "Status unavailable",
+    locations: [], errors: [], importReview: {}, currentProfile: "", targetLocation: "", location: "" }
+}
+
 function parseStatus(raw) {
   var parsed
   try {
     parsed = JSON.parse(text(raw))
   } catch (error) {
-    return { ok: false, message: "Invalid backend response", reason: text(error.message) }
+    return unknownStatus("Invalid backend response")
   }
   parsed = object(parsed)
   if (parsed.ok === false) {
     var responseError = object(parsed.error)
-    return { ok: false, message: text(responseError.message || "Backend request failed"), reason: text(responseError.code) }
+    return unknownStatus(text(responseError.message || "Backend request failed"))
   }
   if (parsed.result !== undefined) parsed = object(parsed.result)
   var setup = object(first(parsed, ["setup", "first_run", "firstRun"], {}))
-  var enabled = first(parsed, ["enabled", "vpn_enabled", "vpnEnabled"], true) !== false
+  var enabled = first(parsed, ["enabled", "vpn_enabled", "vpnEnabled"], null)
+  if (enabled !== null && typeof enabled !== "boolean") return unknownStatus("Invalid enabled field")
   var verified = first(parsed, ["verified", "connection_verified", "connectionVerified"], true) !== false
   var paused = first(parsed, ["paused", "is_paused", "isPaused"], false) === true
   var locationsRaw = first(parsed, ["locations", "servers", "profiles"], [])
   if (!Array.isArray(locationsRaw)) locationsRaw = []
   var locations = []
   for (var i = 0; i < locationsRaw.length; i++) locations.push(normalizeLocation(locationsRaw[i]))
-  var currentId = text(first(parsed, ["current_location_id", "currentLocationId", "current_profile", "current"], ""))
+  var currentId = text(first(parsed, ["current_location_id", "currentLocationId", "current_profile"], object(parsed.current).id || ""))
   var targetId = text(first(parsed, ["target_location_id", "targetLocationId", "target"], ""))
   for (var j = 0; j < locations.length; j++) {
     if (currentId && locations[j].id === currentId) locations[j].current = true
@@ -75,6 +83,7 @@ function parseStatus(raw) {
   for (var k = 0; k < errors.length; k++) normalizedErrors.push(text(first(errors[k], ["message", "reason"], errors[k])))
   var review = object(first(parsed, ["import_review", "importReview", "review"], {}))
   var normalizedState = normalizeState(first(parsed, ["mode", "state", "status"], ""), enabled, verified, paused)
+  if (normalizedState === "unknown") return unknownStatus("Unrecognized or incomplete backend status")
   var lastError = text(first(parsed, ["reason", "message", "last_error", "lastError"], ""))
   return {
     ok: true,
@@ -85,7 +94,8 @@ function parseStatus(raw) {
     paused: paused || normalizedState === "paused",
     state: normalizedState,
     currentProfile: currentId,
-    location: text(first(parsed, ["location", "current_location", "currentLocation"], "")),
+    location: text(first(parsed, ["location", "current_location", "currentLocation"], object(parsed.current).label || "")),
+    targetLabel: text(object(parsed.target_profile).label),
     targetLocation: text(first(parsed, ["target_location", "targetLocation", "target"], "")),
     reason: normalizedState === "failed" || normalizedState === "connecting" || normalizedState === "enabled-unverified" ? lastError : "",
     countdown: countdownFromStatus(parsed),
@@ -131,6 +141,17 @@ function parseCatalog(raw) {
   parsed = object(parsed)
   if (parsed.ok === false) return { ok: false, message: text(object(parsed.error).message || "Could not list locations"), locations: [] }
   if (parsed.result !== undefined) parsed = object(parsed.result)
+  if (Array.isArray(parsed.profiles)) {
+    var named = parsed.profiles.map(function(value) {
+      var item = object(value)
+      return { id: text(item.id), kind: "profile", label: text(item.label || item.source_name || item.id),
+        role: text(item.role), sourceName: text(item.source_name), city: text(item.city), country: text(item.country),
+        countryCode: countryCode(item.country), current: false, target: false, failed: false,
+        profileIds: [text(item.id)] }
+    }).filter(function(item) { return item.id !== "" })
+    named.sort(function(a, b) { return a.label.localeCompare(b.label) })
+    return { ok: true, locations: named }
+  }
   var cities = Array.isArray(parsed.cities) ? parsed.cities : []
   var mru = Array.isArray(parsed.mru) ? parsed.mru : []
   var mruOrder = {}
@@ -150,7 +171,7 @@ function parseCatalog(raw) {
     }
     var profileIds = []
     for (var q = 0; q < profiles.length; q++) profileIds.push(text(object(profiles[q]).id))
-    locations.push({ id: id, city: cityName, country: country, countryCode: countryCode(country), current: false, target: false, failed: false, detail: "", mruRank: rank, profileIds: profileIds })
+    locations.push({ id: id, kind: "city", label: cityName, role: "internet-exit", city: cityName, country: country, countryCode: countryCode(country), current: false, target: false, failed: false, detail: "", mruRank: rank, profileIds: profileIds })
   }
   locations.sort(function(a, b) {
     if (a.mruRank !== b.mruRank) return a.mruRank - b.mruRank
@@ -168,16 +189,17 @@ function mergeStatusCatalog(status, catalog) {
   for (var i = 0; i < sourceLocations.length; i++) {
     var item = {}
     for (var field in sourceLocations[i]) item[field] = sourceLocations[i][field]
-    item.target = item.id === source.targetLocation
-    item.current = text(source.currentProfile) !== "" && Array.isArray(item.profileIds) && item.profileIds.indexOf(text(source.currentProfile)) !== -1
-    if (!item.current && item.target && source.state === "connected") item.current = true
+    item.target = source.state !== "unknown" && (item.kind === "profile" ? "profile:" + item.id : item.id) === source.targetLocation
+    item.current = source.state !== "unknown" && text(source.currentProfile) !== "" && Array.isArray(item.profileIds) && item.profileIds.indexOf(text(source.currentProfile)) !== -1
+    if (!source.currentProfile && item.target && source.state === "connected") item.current = true
+    if (item.target) next.targetLabel = item.kind === "profile" ? item.label : item.id
     item.failed = item.target && source.state === "failed"
     locations.push(item)
   }
   next.locations = orderedLocations(locations)
-  next.location = ""
+  next.location = text(source.location)
   for (var j = 0; j < next.locations.length; j++) {
-    if (next.locations[j].current) { next.location = next.locations[j].id; break }
+    if (next.locations[j].current) { next.location = next.locations[j].kind === "profile" ? next.locations[j].label : next.locations[j].id; break }
   }
   next.setupRequired = next.setupRequired === true || locations.length === 0
   return next
@@ -205,8 +227,30 @@ function filterLocations(locations, query) {
   var needle = text(query).trim().toLowerCase()
   if (!needle) return Array.isArray(locations) ? locations.slice() : []
   return (Array.isArray(locations) ? locations : []).filter(function(item) {
-    return (text(item.city) + " " + text(item.country) + " " + text(item.countryCode)).toLowerCase().indexOf(needle) !== -1
+    return (text(item.label) + " " + text(item.sourceName) + " " + text(item.city) + " " + text(item.country) + " " + text(item.countryCode)).toLowerCase().indexOf(needle) !== -1
   })
+}
+
+function validLabel(value) {
+  return typeof value === "string" && value.trim().length > 0 && Array.from(value).length <= 128 && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+}
+
+function reviewComplete(candidates, labels) {
+  if (!candidates || !candidates.length) return false
+  return candidates.every(function(candidate) {
+    var name = text(candidate.name || candidate.source_name || candidate)
+    return validLabel(labels[name])
+  })
+}
+
+function importReviewArgs(paths, labels) {
+  return ["import"].concat(paths).concat(["--labels", JSON.stringify(labels)])
+}
+
+function connectArgs(location) {
+  var item = object(location)
+  if (!item.id) return []
+  return item.kind === "profile" ? ["connect", "--profile", text(item.id)] : ["connect", text(item.id)]
 }
 
 function shouldDisconnectLocation(location, state) {
@@ -224,7 +268,7 @@ function countryFlag(code) {
 
 function statusCountryCode(status) {
   var value = object(status)
-  if (text(value.state) === "disabled") return ""
+  if (text(value.state) === "disabled" || text(value.state) === "unknown") return ""
   var locations = Array.isArray(value.locations) ? value.locations : []
   var preferCurrent = text(value.state) === "connected"
   for (var pass = 0; pass < 2; pass++) {
@@ -259,7 +303,7 @@ function tooltip(status) {
   if (location) lines.push("Location: " + location)
   if (value.reason) lines.push("Reason: " + text(value.reason))
   var countdown = countdownText(value.countdown)
-  if (countdown) lines.push((value.state === "paused" ? "Resumes in: " : "Retry in: ") + countdown)
+  if (countdown) lines.push((value.state === "paused" ? "Pause timer (not a protection guarantee): " : "Retry in: ") + countdown)
   return lines.join("\n")
 }
 

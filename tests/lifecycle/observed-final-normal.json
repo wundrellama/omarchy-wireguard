@@ -1,0 +1,277 @@
+{
+  "artifact_directory": "/home/michael/.hermes/cache/scratch/wireguard-lifecycle-mbtpku4m",
+  "host_namespaces": {
+    "user": "user:[4026531837]",
+    "mnt": "mnt:[4026531832]",
+    "pid": "pid:[4026531836]",
+    "net": "net:[4026531833]",
+    "ipc": "ipc:[4026531839]",
+    "uts": "uts:[4026531838]"
+  },
+  "kernel_release": "7.2.5-4-omarchy",
+  "host_before_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+  "timeout_seconds": 120,
+  "backend_sha256": {
+    "__init__.py": "181b05ebfdbbaf2105fefdb46528360200c8a033d44b5744039ab28e9eacbc0f",
+    "__main__.py": "ac51882c8e8dd0e55a1cf27ab5d9fb1b5ee8ea8a3b099687f1d03a53c761433e",
+    "constants.py": "5b3e50fd3c75f5180c0dc33a2961ae5c8df2b15ec40e5a75e1a1c037783b65d4",
+    "daemon.py": "e16c0fd6839e85753cc40d1bb0c8a2e72c9ee84ede2daf2e5fa9a53ddd0959bb",
+    "nftables.py": "4de1076b0b1fac7df7a39bfbedd987590459ef055fb19ac74ac7453f2013615c",
+    "protocol.py": "33769a5f63c20fb080caade078c5a81ba7de1b89c99491f8c1de60ed7808c552",
+    "importer.py": "47619a8aaedc74fdc7915c1e636039728eda3f53a64ac2c57f0f49a68fced1a9",
+    "storage.py": "4713548ba6987ee0f2e897629df86ebbf035dd5968bc2f531d2f174c6a11d17f",
+    "controller.py": "1231eeb4ae46cbb6472a43403a513ca6812c1914c03a787a7f4020431c8d37d1",
+    "nm_import.py": "5e57782a4e5c508490f81ce43d804d3c027dfcb1c3589a88d36422e76ab027c8",
+    "system.py": "afb5be466a9112a4b4d4d51f002036d022228bae448f33f7ff622bd76ee62667"
+  },
+  "direct_host_invocation_refused": true,
+  "exit_code": 0,
+  "stderr": "",
+  "result": {
+    "status": "passed",
+    "checks": [
+      {
+        "name": "private_namespace_and_filesystem_preflight",
+        "passed": true,
+        "namespaces": {
+          "user": "user:[4026533261]",
+          "mnt": "mnt:[4026533936]",
+          "pid": "pid:[4026533965]",
+          "net": "net:[4026533967]",
+          "ipc": "ipc:[4026533964]",
+          "uts": "uts:[4026533963]"
+        }
+      },
+      {
+        "name": "no_inherited_service_sockets",
+        "passed": true
+      },
+      {
+        "name": "sysfs_is_private_empty_tmpfs",
+        "passed": true
+      },
+      {
+        "name": "real_private_nm_and_resolved_ready",
+        "passed": true
+      },
+      {
+        "name": "peer_has_independent_network",
+        "passed": true
+      },
+      {
+        "name": "unrelated_profile_initially_active",
+        "passed": true
+      },
+      {
+        "name": "real_controller_import",
+        "passed": true
+      },
+      {
+        "name": "import_tempfile_removed",
+        "passed": true
+      },
+      {
+        "name": "nm_profile_hardened",
+        "passed": true,
+        "settings": "no\n0x6f7467\n10\n~."
+      },
+      {
+        "name": "nm_persisted_keyfile_mode_0600",
+        "passed": true
+      },
+      {
+        "name": "nm_roundtrip_all_wireguard_fields",
+        "passed": true
+      },
+      {
+        "name": "optional_profile_deleted",
+        "passed": true
+      },
+      {
+        "name": "real_post_add_failure_removes_only_new_profile",
+        "passed": true
+      },
+      {
+        "name": "controller_connected",
+        "passed": true,
+        "mode": "connected",
+        "error": null,
+        "verification": {
+          "profile_interface": true,
+          "wireguard_fwmark": true,
+          "firewall_policy": true,
+          "ipv4_default": true,
+          "ipv6_tunneled_or_blocked": true,
+          "split_dns": true,
+          "handshake_fresh": true
+        }
+      },
+      {
+        "name": "public_dns_real_answer",
+        "passed": true
+      },
+      {
+        "name": "lan_dns_real_answer",
+        "passed": true
+      },
+      {
+        "name": "real_udp_tunnel_echo",
+        "passed": true
+      },
+      {
+        "name": "public_dns_ingress_is_tunnel",
+        "passed": true,
+        "packets": [
+          {
+            "kind": "dns",
+            "name": "outside.test",
+            "server": "10.77.0.1",
+            "ingress": "wgpeer"
+          },
+          {
+            "kind": "dns",
+            "name": "outside.test",
+            "server": "10.77.0.1",
+            "ingress": "wgpeer"
+          },
+          {
+            "kind": "dns",
+            "name": "printer.lan",
+            "server": "192.0.2.2",
+            "ingress": "ethpeer"
+          },
+          {
+            "kind": "dns",
+            "name": "printer.lan",
+            "server": "192.0.2.2",
+            "ingress": "ethpeer"
+          },
+          {
+            "kind": "echo",
+            "token": "tunnel-packet",
+            "ingress": "wgpeer"
+          }
+        ]
+      },
+      {
+        "name": "lan_dns_ingress_is_underlay",
+        "passed": true
+      },
+      {
+        "name": "echo_ingress_is_tunnel",
+        "passed": true
+      },
+      {
+        "name": "adapter_clear_tunnel_dns_real_resolved",
+        "passed": true
+      },
+      {
+        "name": "adapter_reconfigure_tunnel_dns",
+        "passed": true
+      },
+      {
+        "name": "controller_restart_reconnects",
+        "passed": true,
+        "error": null
+      },
+      {
+        "name": "restart_retains_original_dns_snapshot",
+        "passed": true
+      },
+      {
+        "name": "unrelated_profile_survives_connect_restart",
+        "passed": true
+      },
+      {
+        "name": "tunnel_loss_enters_failed",
+        "passed": true,
+        "error": "wg failed with status 1"
+      },
+      {
+        "name": "tunnel_loss_retains_fail_closed_table",
+        "passed": true
+      },
+      {
+        "name": "tunnel_loss_public_udp_blocked",
+        "passed": true
+      },
+      {
+        "name": "unrelated_profile_survives_failure",
+        "passed": true
+      },
+      {
+        "name": "retry_reconnects_real_nm",
+        "passed": true,
+        "error": null
+      },
+      {
+        "name": "disconnect_dns_restored",
+        "passed": true
+      },
+      {
+        "name": "disconnect_no_managed_active",
+        "passed": true
+      },
+      {
+        "name": "disconnect_firewall_removed",
+        "passed": true
+      },
+      {
+        "name": "disconnect_direct_udp_positive_control",
+        "passed": true
+      },
+      {
+        "name": "unrelated_profile_survives_disconnect",
+        "passed": true
+      },
+      {
+        "name": "restored_dns_answers_via_original_underlay",
+        "passed": true
+      },
+      {
+        "name": "real_nm_import_rollback_on_persistence_failure",
+        "passed": true
+      },
+      {
+        "name": "rollback_retains_unrelated_active_profile",
+        "passed": true
+      },
+      {
+        "name": "nm_restart_retains_both_profile_keyfiles",
+        "passed": true
+      },
+      {
+        "name": "disabled_backend_restart_stays_disabled",
+        "passed": true
+      },
+      {
+        "name": "connect_after_real_nm_restart",
+        "passed": true,
+        "error": null
+      },
+      {
+        "name": "dns_restore_after_real_nm_restart",
+        "passed": true
+      },
+      {
+        "name": "connect_after_real_resolved_restart",
+        "passed": true,
+        "error": null
+      },
+      {
+        "name": "real_dns_answer_after_resolved_restart",
+        "passed": true
+      },
+      {
+        "name": "final_dns_snapshot_restored",
+        "passed": true
+      }
+    ],
+    "children_reaped": true
+  },
+  "supervisor_process_group_gone": true,
+  "host_after_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+  "host_links_routes_unchanged": true,
+  "host_namespaces_unchanged": true,
+  "status": "passed"
+}

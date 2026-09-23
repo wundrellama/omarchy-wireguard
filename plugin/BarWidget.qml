@@ -6,17 +6,24 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "Traffic.js" as Traffic
 
 Panel {
   id: root
-  moduleName: "nicolasdorier.wireguard"
+  moduleName: "wundrellama.wireguard"
   ipcTarget: moduleName
   manageIpc: false
 
+  property var serviceOverride: null
+  readonly property var service: serviceOverride || liveService
+  readonly property var traffic: service.status.state === "connected" ? (service.traffic || null) : null
+  readonly property bool statusKnown: service.status.state !== "unknown" && service.status.ok !== false
   property int selectedIndex: 0
   property bool cursorActive: false
   property var themeColors: ({})
   property var reviewValues: ({})
+  readonly property string reviewBatchKey: JSON.stringify([service.importPaths || [], ((service.status.importReview || {}).candidates || []).map(function(candidate) { return String(candidate.name || candidate.source_name || candidate) })])
+  onReviewBatchKeyChanged: reviewValues = ({})
   readonly property url installScriptUrl: Qt.resolvedUrl("../scripts/install-backend")
   readonly property string installScriptPath: decodeURIComponent(String(installScriptUrl).replace(/^file:\/\//, ""))
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -26,9 +33,9 @@ Panel {
   readonly property color errorColor: themeColors.red || (bar ? bar.urgent : Color.urgent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var locations: service.filteredLocations
-  readonly property bool firstRowDisconnects: locations.length > 0 && Model.shouldDisconnectLocation(locations[0], service.status.state)
-  readonly property string statusCountryCode: Model.statusCountryCode(service.status)
-  readonly property bool showCountryFlag: service.status.state !== "disabled" && statusCountryCode !== ""
+
+  // Material shield / shield-check, matching the omarchy-vpn addon.
+  readonly property string stateGlyph: String.fromCodePoint(service.status.state === "connected" ? 0xF0565 : 0xF0498)
   readonly property color stateColor: {
     if (service.status.state === "connected") return success
     if (service.status.state === "connecting") return warning
@@ -36,6 +43,7 @@ Panel {
     return dim
   }
   readonly property string stateLabel: {
+    if (!statusKnown) return "Status unknown"
     if (!service.status.installed) return "Backend not installed"
     if (service.status.setupRequired) return "Setup required"
     return String(service.status.state || "Checking")
@@ -53,8 +61,8 @@ Panel {
   }
 
   function activateSelected() {
-    if (locations.length === 0 || selectedIndex < 0 || selectedIndex >= locations.length) return
-    if (selectedIndex === 0 && firstRowDisconnects) service.disconnect()
+    if (!statusKnown || service.busy || locations.length === 0 || selectedIndex < 0 || selectedIndex >= locations.length) return
+    if (Model.shouldDisconnectLocation(locations[selectedIndex], service.status.state)) service.disconnect()
     else {
       service.connectLocation(locations[selectedIndex])
       close()
@@ -73,35 +81,27 @@ Panel {
     })
   }
 
-  function setReviewValue(name, field, value) {
+  function setReviewValue(name, value) {
     var next = ({})
-    for (var key in reviewValues) next[key] = { country: reviewValues[key].country || "", city: reviewValues[key].city || "" }
-    if (!next[name]) next[name] = { country: "", city: "" }
-    next[name][field] = value
+    for (var key in reviewValues) next[key] = reviewValues[key]
+    next[name] = value
     reviewValues = next
   }
 
   function submitReview() {
-    var candidates = service.status.importReview ? service.status.importReview.candidates || [] : []
-    var locations = ({})
+    if (!statusKnown || !reviewComplete()) return
+    var labels = ({})
+    var candidates = service.status.importReview.candidates
     for (var i = 0; i < candidates.length; i++) {
       var name = String(candidates[i].name || candidates[i].source_name || candidates[i])
-      var value = reviewValues[name] || {}
-      if (!value.country || !value.city) return
-      locations[name] = { country: String(value.country), city: String(value.city) }
+      labels[name] = reviewValues[name]
     }
-    service.submitImportReview(locations)
+    service.submitImportReview(labels)
   }
 
   function reviewComplete() {
     var candidates = service.status.importReview ? service.status.importReview.candidates || [] : []
-    if (candidates.length === 0) return false
-    for (var i = 0; i < candidates.length; i++) {
-      var name = String(candidates[i].name || candidates[i].source_name || candidates[i])
-      var value = reviewValues[name] || {}
-      if (!value.country || !value.city) return false
-    }
-    return true
+    return Model.reviewComplete(candidates, reviewValues)
   }
 
   function open() {
@@ -133,13 +133,15 @@ Panel {
   }
 
   Service {
-    id: service
+    id: liveService
+    active: root.serviceOverride === null
     settings: root.settings
     installScriptPath: root.installScriptPath
   }
 
   Connections {
     target: service
+    function onImportSelectionFinished() { root.open() }
     function onActionFinished(action, success) {
       if (!success && root.opened) Qt.callLater(function() { search.forceActiveFocus() })
     }
@@ -160,39 +162,9 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: Model.tooltip(service.status)
-    iconComponent: Component {
-      Item {
-        Text {
-          visible: root.showCountryFlag
-          anchors.centerIn: parent
-          text: Model.countryFlag(root.statusCountryCode)
-          font.family: root.fontFamily
-          font.pixelSize: Style.bar.iconFont
-        }
-        Rectangle {
-          visible: !root.showCountryFlag
-          anchors.centerIn: parent
-          width: Style.space(7)
-          height: width
-          radius: width / 2
-          color: service.status.state === "disabled" || service.status.state === "paused" ? "transparent" : root.stateColor
-          border.width: service.status.state === "disabled" || service.status.state === "paused" ? Math.max(1, Style.space(1)) : 0
-          border.color: root.stateColor
-        }
-        Rectangle {
-          visible: root.showCountryFlag
-          anchors.top: parent.top
-          anchors.right: parent.right
-          width: Style.space(6)
-          height: width
-          radius: width / 2
-          color: service.status.state === "paused" ? "transparent" : root.stateColor
-          border.width: service.status.state === "paused" ? Math.max(1, Style.space(1)) : 0
-          border.color: root.stateColor
-        }
-      }
-    }
+    tooltipText: Model.tooltip(service.status) + (service.status.state === "connected" ? "\n" + Traffic.summary(root.traffic) : "")
+    text: root.stateGlyph
+    foreground: root.stateColor
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()
     }
@@ -234,21 +206,45 @@ Panel {
           PanelHero {
             width: parent.width
             title: service.status.state === "connecting" || service.status.state === "failed" || service.status.state === "paused"
-              ? (service.status.targetLocation || "WireGuard")
-              : (service.status.location || service.status.targetLocation || "WireGuard")
+              ? (service.status.targetLabel || service.status.targetLocation || "WireGuard")
+              : (service.status.location || service.status.targetLabel || service.status.targetLocation || "WireGuard")
             meta: root.stateLabel
-            detail: service.status.countdown ? Model.countdownText(service.status.countdown) : ""
+            detail: service.status.state === "paused" ? "Paused; protection is not confirmed until connected" : "Internet exit · Full tunnel"
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
-              Rectangle {
-                width: Style.font.display * 0.55
-                height: width
-                radius: width / 2
-                color: service.status.state === "disabled" || service.status.state === "paused" ? "transparent" : root.stateColor
-                border.width: service.status.state === "disabled" || service.status.state === "paused" ? Math.max(1, Style.space(2)) : 0
-                border.color: root.stateColor
+              Text {
+                text: root.stateGlyph
+                color: root.stateColor
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
               }
+            }
+          }
+
+          Column {
+            visible: service.status.state === "connected"
+            width: parent.width
+            spacing: Style.space(5)
+            PanelSectionHeader { text: "INTERFACE TRAFFIC"; foreground: root.foreground; fontFamily: root.fontFamily }
+            Text {
+              width: parent.width
+              text: "Download ↓ " + Traffic.formatBytes(root.traffic ? root.traffic.down : null) + "/s"
+                + "    Upload ↑ " + Traffic.formatBytes(root.traffic ? root.traffic.up : null) + "/s"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: root.traffic
+                ? "Received " + Traffic.formatBytes(root.traffic.rx) + " · Sent " + Traffic.formatBytes(root.traffic.tx) + "\nSince interface creation"
+                : "Traffic unavailable · waiting for interface counters"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -264,23 +260,26 @@ Panel {
           }
 
           Column {
-            visible: !service.status.installed || service.status.setupRequired
+            visible: !root.statusKnown || !service.status.installed || service.status.setupRequired
             width: parent.width
             spacing: Style.space(8)
             PanelSectionHeader { text: "GET STARTED"; foreground: root.foreground; fontFamily: root.fontFamily }
             Text {
               width: parent.width
-              text: service.status.installed
-                ? "Import compatible WireGuard profiles individually, as a directory, or as a ZIP."
+              text: !root.statusKnown
+                ? "Backend status is unknown. Install or repair only if needed; authorization is required."
+                : service.status.installed
+                ? "Import full-tunnel WireGuard profiles individually, as a directory, or as a ZIP. Split routes are not supported."
                 : "Install the privileged WireGuard backend first, then import a compatible WireGuard profile."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               wrapMode: Text.WordWrap
             }
-            Row {
+            Flow {
+              width: parent.width
               spacing: Style.space(6)
-              Button { visible: !service.status.installed; enabled: !service.busy && service.installScriptPath !== ""; focusable: true; text: "Install backend"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.installBackend() }
+              Button { visible: !root.statusKnown || !service.status.installed; enabled: service.active === true && !service.busy && !!service.installScriptPath && !!service.currentUser; focusable: true; text: root.statusKnown ? "Install backend" : "Install / repair backend"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.installBackend() }
               Button { focusable: true; text: "Open TorGuard generator"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.openGenerator() }
             }
           }
@@ -305,13 +304,13 @@ Panel {
           }
 
           Column {
-            visible: service.status.importReview && service.status.importReview.ambiguous
+            visible: !!service.status.importReview && service.status.importReview.ambiguous === true
             width: parent.width
             spacing: Style.space(5)
             PanelSectionHeader { text: "IMPORT REVIEW"; foreground: root.warning; fontFamily: root.fontFamily }
             Text {
               width: parent.width
-              text: service.status.importReview.message || "Several profiles match. Review the backend result before replacing existing profiles."
+              text: service.status.importReview.message || "Give each source a display label (up to 128 printable characters)."
               color: root.warning
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -325,29 +324,30 @@ Panel {
                 sourceName: String(modelData.name || modelData.source_name || modelData)
               }
             }
-            Button { text: "Import reviewed profiles"; enabled: root.reviewComplete(); focusable: true; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.submitReview() }
+            Button { text: "Import reviewed profiles"; enabled: root.statusKnown && !service.busy && root.reviewComplete(); focusable: true; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.submitReview() }
           }
 
           Row {
             width: parent.width
             spacing: Style.space(6)
             Button { visible: service.status.installed && service.status.state === "failed"; focusable: true; text: "Retry"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.retry() }
-            Button { visible: service.status.installed && service.status.enabled && service.status.state !== "paused"; enabled: !service.busy; focusable: true; text: "Pause 10 min"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.pauseTenMinutes() }
+            Button { visible: !root.statusKnown && service.disconnectRecovery === true; enabled: !service.busy; focusable: true; text: "Disconnect"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.disconnect() }
+            Button { visible: !root.statusKnown; focusable: true; text: "Refresh status"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.refresh() }
             Button { visible: service.status.installed; enabled: !service.busy; focusable: true; text: "Copy diagnostics"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.copyDiagnostics() }
           }
 
           PanelSeparator { visible: service.status.installed; foreground: root.foreground }
 
           Column {
-            visible: service.status.installed
+            visible: service.status.installed || root.locations.length > 0
             width: parent.width
             spacing: Style.space(8)
-            PanelSectionHeader { text: "LOCATIONS"; foreground: root.foreground; fontFamily: root.fontFamily }
+            PanelSectionHeader { text: "PROFILES"; foreground: root.foreground; fontFamily: root.fontFamily }
             TextField {
               id: search
               width: parent.width
               foreground: root.foreground
-              placeholderText: "Search city or country"
+              placeholderText: "Search name, source, city or country"
               text: service.query
               onTextChanged: { service.query = text; root.selectedIndex = 0 }
               onAccepted: root.activateSelected()
@@ -360,7 +360,7 @@ Panel {
             Text {
               visible: root.locations.length === 0
               width: parent.width
-              text: "No matching locations"
+              text: "No matching profiles"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -389,8 +389,8 @@ Panel {
           Row {
             visible: service.status.installed
             spacing: Style.space(6)
-            Button { enabled: !service.busy; focusable: true; text: "Import / replace"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.chooseImport(true, false) }
-            Button { enabled: !service.busy; focusable: true; text: "Directory"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.chooseImport(false, true) }
+            Button { enabled: root.statusKnown && !service.busy; focusable: true; text: "Import profiles"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.chooseImport(false) }
+            Button { enabled: root.statusKnown && !service.busy; focusable: true; text: "Directory"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.chooseImport(true) }
           }
 
           Column {
@@ -400,7 +400,7 @@ Panel {
             PanelSeparator { width: parent.width; foreground: root.foreground }
             PanelSectionHeader { text: "BACKEND MAINTENANCE"; foreground: root.foreground; fontFamily: root.fontFamily }
             Button {
-              enabled: !service.busy
+              enabled: root.statusKnown && !service.busy
               focusable: true
               text: "Uninstall backend"
               foreground: root.errorColor
@@ -418,7 +418,8 @@ Panel {
     property var location: null
     property int rowIndex: 0
     readonly property bool currentOrTarget: location && (location.current || location.target)
-    readonly property bool disconnectAction: rowIndex === 0 && Model.shouldDisconnectLocation(location, service.status.state)
+    readonly property bool disconnectAction: Model.shouldDisconnectLocation(location, service.status.state)
+    enabled: root.statusKnown && !service.busy
     hasCursor: root.cursorActive && root.selectedIndex === rowIndex
     current: currentOrTarget
     foreground: root.foreground
@@ -453,11 +454,11 @@ Panel {
         id: labels
         Layout.fillWidth: true
         spacing: Style.space(1)
-        Text { Layout.fillWidth: true; text: row.location ? row.location.city : ""; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: row.currentOrTarget; elide: Text.ElideRight }
-        Text { Layout.fillWidth: true; text: row.location ? (row.location.country || row.location.detail) : ""; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+        Text { Layout.fillWidth: true; text: row.location ? (row.location.label || row.location.city) : ""; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: row.currentOrTarget; elide: Text.ElideRight }
+        Text { Layout.fillWidth: true; text: "Internet exit" + (row.location && (row.location.city || row.location.country) ? " · " + [row.location.city, row.location.country].filter(function(v) { return !!v }).join(", ") : ""); textFormat: Text.PlainText; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
       }
       Text {
-        text: row.disconnectAction ? "Disconnect" : (row.location && row.location.target ? "Connecting" : (row.location && row.location.current ? "Connected" : "Connect"))
+        text: !root.statusKnown ? "Unknown" : (row.disconnectAction ? "Disconnect" : (row.location && row.location.target && service.status.state === "connecting" ? "Connecting" : "Connect"))
         color: row.disconnectAction && service.status.state === "failed" ? root.errorColor : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -470,23 +471,13 @@ Panel {
     width: parent ? parent.width : 0
     spacing: Style.space(4)
     Text { width: parent.width; text: sourceName; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle }
-    Row {
+    TextField {
       width: parent.width
-      spacing: Style.space(6)
-      TextField {
-        width: (parent.width - parent.spacing) / 2
-        foreground: root.foreground
-        placeholderText: "Country"
-        text: root.reviewValues[sourceName] ? root.reviewValues[sourceName].country || "" : ""
-        onTextEdited: root.setReviewValue(sourceName, "country", text)
-      }
-      TextField {
-        width: (parent.width - parent.spacing) / 2
-        foreground: root.foreground
-        placeholderText: "City"
-        text: root.reviewValues[sourceName] ? root.reviewValues[sourceName].city || "" : ""
-        onTextEdited: root.setReviewValue(sourceName, "city", text)
-      }
+      foreground: root.foreground
+      placeholderText: "Display label"
+      maximumLength: 128
+      text: root.reviewValues[sourceName] || ""
+      onTextEdited: root.setReviewValue(sourceName, text)
     }
   }
 }

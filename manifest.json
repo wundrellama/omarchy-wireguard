@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "nicolasdorier.wireguard",
+  "id": "wundrellama.wireguard",
   "name": "WireGuard",
   "version": "1.0.0",
-  "author": "Nicolas Dorier",
+  "author": "wundrellama",
   "license": "MIT",
-  "description": "WireGuard status and location controls for Omarchy.",
+  "description": "Named WireGuard profiles, connection status and traffic statistics for Omarchy.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "WireGuard",
-    "description": "Show WireGuard state, connect to locations, pause, retry, and manage profiles.",
+    "description": "Show WireGuard state and traffic, connect to named profiles, retry, and import profiles.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

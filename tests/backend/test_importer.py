@@ -42,6 +42,28 @@ class ImporterTests(unittest.TestCase):
         self.assertFalse(ambiguous)
         self.assertEqual(reviewed[0].city_key, "Japan/Tokyo")
 
+    def test_labels_require_exact_names_and_bounded_printable_text(self):
+        files = [("nested/home.conf", CONFIG.encode())]
+        for labels in ([], "Home", {"home.conf": "Home"}, {"nested/home.conf": None},
+                       {"nested/home.conf": ""}, {"nested/home.conf": "   "},
+                       {"nested/home.conf": "x" * 129}, {"nested/home.conf": "Home\nexit"},
+                       {"nested/home.conf": "Home\x00exit"}):
+            with self.subTest(labels=labels), self.assertRaisesRegex(ImportFailure, "label"):
+                parse_profiles(files, labels=labels)
+        profiles, ambiguous = parse_profiles(files, labels={"nested/home.conf": "x" * 128})
+        self.assertFalse(ambiguous)
+        self.assertEqual(profiles[0].label, "x" * 128)
+
+    def test_named_profiles_allow_explicit_empty_geography(self):
+        files = [("us-seattle.conf", CONFIG.encode())]
+        profiles, ambiguous = parse_profiles(files,
+            locations={"us-seattle.conf": {"country": "", "city": ""}},
+            labels={"us-seattle.conf": "Home"})
+        self.assertFalse(ambiguous)
+        self.assertEqual((profiles[0].country, profiles[0].city), ("", ""))
+        with self.assertRaisesRegex(ImportFailure, "location"):
+            parse_profiles(files, locations={"us-seattle.conf": {"country": "", "city": ""}})
+
     def test_rejects_traversal_and_zip_symlink(self):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as zipped:

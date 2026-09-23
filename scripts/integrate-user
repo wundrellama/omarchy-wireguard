@@ -18,7 +18,7 @@ start = "  // omarchy-wireguard:start"
 end = "  // omarchy-wireguard:end"
 entry = ('  "setup.network.wireguard": {"icon":"󰦝","label":"WireGuard VPN",'
          '"aliases":["torguard","vpn","wireguard"],'
-         '"action":"omarchy-shell shell toggle nicolasdorier.wireguard {}"}')
+         '"action":"omarchy-shell shell toggle wundrellama.wireguard {}"}')
 
 pattern = re.compile(r"\n?\s*// omarchy-wireguard:start\n.*?\n\s*// omarchy-wireguard:end\n?", re.S)
 text = pattern.sub("\n", text)
@@ -44,6 +44,6 @@ temporary.replace(path)
 PY
 
 if [[ $mode == install ]]; then
-  omarchy bar move nicolasdorier.wireguard --section right --before omarchy.network >/dev/null
+  omarchy bar move wundrellama.wireguard --section right --before omarchy.network >/dev/null
   omarchy menu refresh >/dev/null 2>&1 || true
 fi

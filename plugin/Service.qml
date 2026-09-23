@@ -6,11 +6,20 @@ import "Model.js" as Model
 Item {
   id: root
 
+  property bool active: true
+  readonly property var traffic: trafficService.traffic
+  TrafficService {
+    id: trafficService
+    profile: root.active && root.status.state === "connected" ? (root.status.currentProfile || "") : ""
+  }
+  property double lastStatusAt: 0
+  property int statusRevision: 0
+  property bool disconnectRecovery: false
   property var settings: ({})
   property string installScriptPath: ""
   property string currentUser: Quickshell.env("USER") || Quickshell.env("LOGNAME")
   property bool panelOpen: false
-  property var status: ({ ok: false, installed: false, setupRequired: true, state: "disabled", locations: [], errors: [], importReview: {} })
+  property var status: Model.unknownStatus("Checking status")
   property string lastError: ""
   property string actionError: ""
   property string actionMessage: ""
@@ -27,12 +36,13 @@ Item {
   property bool handshakeFailureConfirmationPending: false
   property string pendingAction: ""
   property string pickerMode: ""
-  property bool replaceImport: false
+
   property string diagnosticsText: ""
   property var catalog: ({ ok: true, locations: [] })
   property var importPaths: []
 
   signal actionFinished(string action, bool success)
+  signal importSelectionFinished()
 
   function intSetting(name, fallback, min, max) {
     var value = settings && settings[name] !== undefined ? settings[name] : fallback
@@ -42,8 +52,11 @@ Item {
   }
 
   function refresh() {
+    if (!active || actionProcess.running || installProcess.running) return
     if (!statusProcess.running) {
       refreshing = true
+      statusProcess.startedAt = Date.now()
+      statusProcess.revision = statusRevision
       statusProcess.command = ["omarchy-wireguard", "status"]
       statusProcess.running = true
     }
@@ -54,25 +67,27 @@ Item {
   }
 
   function runAction(name, args) {
-    if (busy || actionProcess.running) return
+    if (!active || busy || actionProcess.running) return
+    if (status.state === "unknown" && args[0] !== "disconnect") return
     pendingAction = name
     actionMessage = name
+    statusRevision++
+    markCliUnavailable("Action in progress; awaiting status")
     actionProcess.command = ["omarchy-wireguard"].concat(args)
     actionProcess.running = true
   }
 
   function connectLocation(location) {
-    if (!location || !location.id) return
-    runAction("Connecting", ["connect", String(location.id)])
+    if (!location || !location.id || status.state === "unknown") return
+    runAction("Connecting", Model.connectArgs(location))
   }
 
-  function disconnect() { runAction("Disconnecting", ["disconnect"]) }
+  function disconnect() { if (status.state !== "unknown" || disconnectRecovery) runAction("Disconnecting", ["disconnect"]) }
   function retry() { runAction("Retrying", ["retry"]) }
-  function pauseTenMinutes() { runAction("Pausing for 10 minutes", ["pause", "600"]) }
 
-  function chooseImport(replace, directory) {
-    if (pickerProcess.running || busy) return
-    replaceImport = replace === true
+
+  function chooseImport(directory) {
+    if (!active || status.state === "unknown" || pickerProcess.running || busy) return
     pickerMode = directory === true ? "directory" : "files"
     pickerProcess.command = directory === true
       ? ["omarchy-file-select", "--title", "Import WireGuard profile directory", "--directory"]
@@ -80,13 +95,13 @@ Item {
     pickerProcess.running = true
   }
 
-  function submitImportReview(locations) {
-    if (!importPaths || importPaths.length === 0 || !locations || typeof locations !== "object") return
-    runAction("Importing reviewed profiles", ["import"].concat(importPaths).concat(["--locations", JSON.stringify(locations)]))
+  function submitImportReview(labels) {
+    if (!importPaths || importPaths.length === 0 || !Model.reviewComplete(status.importReview.candidates, labels)) return
+    runAction("Importing reviewed profiles", Model.importReviewArgs(importPaths, labels))
   }
 
   function installBackend() {
-    if (installProcess.running || !installScriptPath || !currentUser) return
+    if (!active || busy || installProcess.running || !installScriptPath || !currentUser) return
     actionMessage = "Installing backend"
     installProcess.operation = "install"
     installProcess.command = ["pkexec", installScriptPath, currentUser]
@@ -94,7 +109,7 @@ Item {
   }
 
   function uninstallBackend() {
-    if (installProcess.running || !currentUser) return
+    if (!active || status.state === "unknown" || installProcess.running || !currentUser) return
     actionMessage = "Uninstalling backend"
     installProcess.operation = "uninstall"
     installProcess.command = ["pkexec", "/usr/lib/omarchy-wireguard/uninstall-backend", currentUser]
@@ -102,25 +117,27 @@ Item {
   }
 
   function openGenerator() {
+    if (!active) return
     // TorGuard assumption: this optional shortcut opens TorGuard's profile generator.
     Quickshell.execDetached(["omarchy-launch-browser", "https://torguard.net/tgconf.php?action=vpn-wireguardconfig"])
   }
 
   function copyDiagnostics() {
-    if (diagnosticsProcess.running || clipboardProcess.running) return
+    if (!active || diagnosticsProcess.running || clipboardProcess.running) return
     diagnosticsText = ""
     diagnosticsProcess.command = ["omarchy-wireguard", "diagnostics"]
     diagnosticsProcess.running = true
   }
 
   function notify(summary, body, urgency) {
-    Quickshell.execDetached(["notify-send", "--app-name", "WireGuard", "--urgency", urgency || "normal", summary, body || ""])
+    if (!active) return
+    Quickshell.execDetached(["omarchy-notification-send", "--app-name", "WireGuard", "--urgency", urgency || "normal", summary, body || ""])
   }
 
   function applyStatus(raw) {
     var next = Model.parseStatus(raw)
     if (!next.ok) {
-      lastError = next.message + (next.reason ? ": " + next.reason : "")
+      markCliUnavailable(next.message)
       return
     }
     var merged = Model.mergeStatusCatalog(next, catalog)
@@ -154,11 +171,13 @@ Item {
         if (merged.state === "connected" || merged.state === "disabled" || merged.state === "paused")
           failureNotificationShown = false
       }
-      if (previousPaused && !merged.paused) notify("WireGuard pause expired", "VPN protection resumed", "normal")
+
     }
     previousState = merged.state
     previousPaused = merged.paused
     sawFirstStatus = true
+    lastStatusAt = Date.now()
+    disconnectRecovery = merged.enabled === true || merged.state === "connected"
     status = merged
     lastError = ""
   }
@@ -166,13 +185,28 @@ Item {
   function markCliUnavailable(message) {
     refreshing = false
     lastError = message || "WireGuard CLI is not available"
-    var next = ({})
-    for (var key in status) next[key] = status[key]
-    next.installed = false
-    next.setupRequired = true
-    next.state = "disabled"
-    next.reason = lastError
+    var next = Model.mergeStatusCatalog(Model.unknownStatus(lastError), catalog)
+    next.importReview = status.importReview || {}
     status = next
+  }
+
+  function expireStatus() {
+    if (statusProcess.running && Date.now() - statusProcess.startedAt > 10000) {
+      statusRevision++
+      statusProcess.running = false
+      markCliUnavailable("Status request timed out; connection is unknown")
+    }
+    if (lastStatusAt && Date.now() - lastStatusAt > Math.max(10000, closedRefreshIntervalSec * 2000))
+      markCliUnavailable("Status is stale; connection is unknown")
+  }
+
+  function applyPoll(raw, startedAt, revision) {
+    if (!active || revision !== statusRevision) return
+    if (Date.now() - startedAt > 10000) {
+      markCliUnavailable("Stale status response ignored")
+      return
+    }
+    applyStatus(raw)
   }
 
   function applyActionOutput(raw) {
@@ -180,18 +214,20 @@ Item {
     try {
       value = JSON.parse(String(raw || ""))
     } catch (error) {
+      markCliUnavailable("Invalid action response")
       return
     }
     if (!value || typeof value !== "object") return
     if (value.ok === false) {
       actionError = String((value.error && value.error.message) || "Backend request failed")
+      markCliUnavailable("Action rejected; refresh required")
       return
     }
     if (value.result && typeof value.result === "object") value = value.result
     var review = value.import_review || value.importReview || value.review
     if (!review && Array.isArray(value.review_required)) review = {
       ambiguous: value.review_required.length > 0,
-      message: value.message || "Location review is required",
+      message: value.message || "Display labels are required",
       candidates: value.review_required
     }
     var errors = value.errors || value.problems
@@ -224,8 +260,27 @@ Item {
   Timer {
     interval: (root.panelOpen || root.transitioning ? 1500 : root.closedRefreshIntervalSec * 1000)
     repeat: true
-    running: true
+    running: root.active
     onTriggered: root.refresh()
+  }
+
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.active
+    onTriggered: root.expireStatus()
+  }
+
+  onActiveChanged: if (!active) {
+    statusProcess.running = false
+    listProcess.running = false
+    actionProcess.running = false
+    pickerProcess.running = false
+    diagnosticsProcess.running = false
+    clipboardProcess.running = false
+    installProcess.running = false
+    delayedRefresh.stop()
+    handshakeFailureNotificationDelay.stop()
   }
 
   Timer {
@@ -247,6 +302,8 @@ Item {
 
   Process {
     id: statusProcess
+    property double startedAt: 0
+    property int revision: 0
     property bool handledExit: false
     stdout: StdioCollector { id: statusStdout; waitForEnd: true }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
@@ -256,8 +313,9 @@ Item {
     }
     onExited: function(exitCode) {
       handledExit = true
+      if (!root.active) return
       root.refreshing = false
-      if (exitCode === 0) root.applyStatus(statusStdout.text)
+      if (exitCode === 0) root.applyPoll(statusStdout.text, startedAt, revision)
       else {
         var error = String(statusStderr.text || statusStdout.text || "WireGuard backend unavailable").trim()
         root.markCliUnavailable(error)
@@ -279,6 +337,7 @@ Item {
     stdout: StdioCollector { id: listStdout; waitForEnd: true }
     stderr: StdioCollector { id: listStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (!root.active) return
       if (exitCode !== 0) {
         root.lastError = String(listStderr.text || listStdout.text || "Could not list WireGuard locations").trim()
         return
@@ -298,13 +357,17 @@ Item {
     stdout: StdioCollector { id: actionStdout; waitForEnd: true }
     stderr: StdioCollector { id: actionStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (!root.active) return
       var action = root.pendingAction
       root.pendingAction = ""
       root.actionMessage = ""
-      if (exitCode !== 0) root.actionError = String(actionStderr.text || actionStdout.text || "WireGuard action failed").trim()
+      if (exitCode !== 0) {
+        root.actionError = String(actionStderr.text || actionStdout.text || "WireGuard action failed").trim()
+        root.markCliUnavailable("Action failed; refresh required")
+      }
       else {
         root.actionError = ""
-        if (String(actionStdout.text || "").trim().charAt(0) === "{") root.applyActionOutput(actionStdout.text)
+        root.applyActionOutput(actionStdout.text)
       }
       root.actionFinished(action, exitCode === 0)
       delayedRefresh.restart()
@@ -316,15 +379,26 @@ Item {
     stdout: StdioCollector { id: pickerStdout; waitForEnd: true }
     stderr: StdioCollector { id: pickerStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (!root.active) return
       if (exitCode === 1) return
       if (exitCode !== 0) {
         root.actionError = String(pickerStderr.text || "File chooser failed").trim()
+        root.importSelectionFinished()
         return
       }
       var paths = String(pickerStdout.text || "").split("\n").filter(function(path) { return path !== "" })
       if (paths.length === 0) return
-      root.importPaths = paths
-      root.runAction("Importing profiles", ["import"].concat(paths))
+      // Quickshell emits exited before runningChanged. Starting synchronously
+      // here would be silently rejected because busy still includes the picker.
+      Qt.callLater(function() {
+        if (!root.active) return
+        root.importPaths = paths
+        if (root.busy || root.status.state === "unknown")
+          root.actionError = "Cannot import while busy or status is unknown; refresh and try again"
+        else
+          root.runAction("Importing profiles", ["import"].concat(paths))
+        root.importSelectionFinished()
+      })
     }
   }
 
@@ -333,6 +407,7 @@ Item {
     stdout: StdioCollector { id: diagnosticsStdout; waitForEnd: true }
     stderr: StdioCollector { id: diagnosticsStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (!root.active) return
       if (exitCode !== 0) {
         root.actionError = String(diagnosticsStderr.text || "Could not collect diagnostics").trim()
         return

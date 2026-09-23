@@ -69,28 +69,33 @@ def serve(controller_uid: int, socket_path: Path = SOCKET_PATH, state_dir: Path 
 def _handle_connection(connection: socket.socket, controller: Controller, controller_uid: int) -> None:
     request_id = None
     try:
-        _pid, uid, _gid = peer_credentials(connection)
-        if not authorized(uid, controller_uid):
-            raise ProtocolError("unauthorized peer")
-        request = read_request(connection)
+        # Only socket setup/read errors are transport failures. In particular,
+        # an OSError raised by controller.handle must still fail closed below.
+        try:
+            _pid, uid, _gid = peer_credentials(connection)
+            if not authorized(uid, controller_uid):
+                raise ProtocolError("unauthorized peer")
+            request = read_request(connection)
+        except OSError as exc:
+            LOG.warning("request transport failed (%s)", type(exc).__name__)
+            return
         request_id = request.get("request_id")
         result = controller.handle(request["op"], request["args"])
-        send_response(connection, {"ok": True, "request_id": request_id, "result": result})
+        response = {"ok": True, "request_id": request_id, "result": result}
     except (ProtocolError, RequestFailure) as exc:
-        try:
-            send_response(connection, {"ok": False, "request_id": request_id,
-                                       "error": {"code": "rejected", "message": str(exc)}})
-        except (OSError, BrokenPipeError):
-            pass
-    except Exception:
-        # Inputs and subprocess output can contain secrets. The journal gets no exception text.
-        LOG.exception("request failed internally", extra={"request_id": request_id})
+        response = {"ok": False, "request_id": request_id,
+                    "error": {"code": "rejected", "message": str(exc)}}
+    except Exception as exc:
+        # Inputs and subprocess output can contain secrets: log only the type,
+        # without traceback, exception text, or client-supplied request ID.
+        LOG.error("request failed internally (%s)", type(exc).__name__)
         controller.emergency()
-        try:
-            send_response(connection, {"ok": False, "request_id": request_id,
-                                       "error": {"code": "internal", "message": "internal failure"}})
-        except OSError:
-            pass
+        response = {"ok": False, "request_id": request_id,
+                    "error": {"code": "internal", "message": "internal failure"}}
+    try:
+        send_response(connection, response)
+    except OSError as exc:
+        LOG.warning("response delivery failed (%s)", type(exc).__name__)
 
 
 def fail_closed(state_dir: Path = STATE_DIR) -> None:

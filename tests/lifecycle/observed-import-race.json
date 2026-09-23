@@ -1,0 +1,107 @@
+{
+  "artifact_directory": "/home/michael/.hermes/cache/scratch/wireguard-lifecycle-jmltwgme",
+  "host_namespaces": {
+    "user": "user:[4026531837]",
+    "mnt": "mnt:[4026531832]",
+    "pid": "pid:[4026531836]",
+    "net": "net:[4026531833]",
+    "ipc": "ipc:[4026531839]",
+    "uts": "uts:[4026531838]"
+  },
+  "kernel_release": "7.2.5-4-omarchy",
+  "host_before_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+  "timeout_seconds": 120,
+  "backend_sha256": {
+    "__init__.py": "181b05ebfdbbaf2105fefdb46528360200c8a033d44b5744039ab28e9eacbc0f",
+    "__main__.py": "ac51882c8e8dd0e55a1cf27ab5d9fb1b5ee8ea8a3b099687f1d03a53c761433e",
+    "constants.py": "5b3e50fd3c75f5180c0dc33a2961ae5c8df2b15ec40e5a75e1a1c037783b65d4",
+    "daemon.py": "e16c0fd6839e85753cc40d1bb0c8a2e72c9ee84ede2daf2e5fa9a53ddd0959bb",
+    "nftables.py": "4de1076b0b1fac7df7a39bfbedd987590459ef055fb19ac74ac7453f2013615c",
+    "protocol.py": "33769a5f63c20fb080caade078c5a81ba7de1b89c99491f8c1de60ed7808c552",
+    "importer.py": "47619a8aaedc74fdc7915c1e636039728eda3f53a64ac2c57f0f49a68fced1a9",
+    "storage.py": "4713548ba6987ee0f2e897629df86ebbf035dd5968bc2f531d2f174c6a11d17f",
+    "controller.py": "1231eeb4ae46cbb6472a43403a513ca6812c1914c03a787a7f4020431c8d37d1",
+    "system.py": "4ecb716c248efa40f379e1b22373c3bfb9507979816366cfafdbfae57ded787c"
+  },
+  "direct_host_invocation_refused": true,
+  "exit_code": 1,
+  "stderr": "",
+  "result": {
+    "status": "failed",
+    "checks": [
+      {
+        "name": "private_namespace_and_filesystem_preflight",
+        "passed": true,
+        "namespaces": {
+          "user": "user:[4026533261]",
+          "mnt": "mnt:[4026533936]",
+          "pid": "pid:[4026533965]",
+          "net": "net:[4026533967]",
+          "ipc": "ipc:[4026533964]",
+          "uts": "uts:[4026533963]"
+        }
+      },
+      {
+        "name": "no_inherited_service_sockets",
+        "passed": true
+      },
+      {
+        "name": "sysfs_is_private_empty_tmpfs",
+        "passed": true
+      },
+      {
+        "name": "real_private_nm_and_resolved_ready",
+        "passed": true
+      },
+      {
+        "name": "peer_has_independent_network",
+        "passed": true
+      },
+      {
+        "name": "unrelated_profile_initially_active",
+        "passed": true
+      },
+      {
+        "name": "real_controller_import",
+        "passed": true
+      },
+      {
+        "name": "import_tempfile_removed",
+        "passed": true
+      },
+      {
+        "name": "import_must_not_activate_before_connect",
+        "passed": false,
+        "controller_mode": "disabled",
+        "actual_nm_state": "",
+        "active_during_import": "import-v_jwc2ze:wireguard\nunrelated-keep:dummy\n",
+        "dns_during_import": "Global:\nLink 5 (import-v_jwc2ze): 10.77.0.1\nLink 4 (unrelated0):\nLink 3 (eth0): 192.0.2.2\n",
+        "route_during_import": [
+          {
+            "dst": "1.1.1.1",
+            "dev": "import-v_jwc2ze",
+            "table": "52169",
+            "prefsrc": "10.77.0.2",
+            "flags": [],
+            "uid": 0,
+            "cache": []
+          }
+        ],
+        "firewall_tables_during_import": "table ip nm-wg-import-v_jwc2ze\n"
+      }
+    ],
+    "error": "import_must_not_activate_before_connect",
+    "logs": {
+      "dbus": "",
+      "resolved": "Positive Trust Anchors:\n. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d\n. IN DS 38696 8 2 683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16\nNegative trust anchors: home.arpa 10.in-addr.arpa 16.172.in-addr.arpa 17.172.in-addr.arpa 18.172.in-addr.arpa 19.172.in-addr.arpa 20.172.in-addr.arpa 21.172.in-addr.arpa 22.172.in-addr.arpa 23.172.in-addr.arpa 24.172.in-addr.arpa 25.172.in-addr.arpa 26.172.in-addr.arpa 27.172.in-addr.arpa 28.172.in-addr.arpa 29.172.in-addr.arpa 30.172.in-addr.arpa 31.172.in-addr.arpa 170.0.0.192.in-addr.arpa 171.0.0.192.in-addr.arpa 168.192.in-addr.arpa d.f.ip6.arpa ipv4only.arpa resolver.arpa corp home internal intranet lan local private test\nUsing system hostname 'Framework16'.\neth0: Bus client set DNS server list to: 192.0.2.2\neth0: Bus client set search domain list to: original.test, ~original.test\neth0: Bus client set default route setting: yes\nunrelated0: Bus client set default route setting: no\nimport-v_jwc2ze: Bus client set search domain list to: ~.\nimport-v_jwc2ze: Bus client set default route setting: yes\nimport-v_jwc2ze: Bus client set DNS server list to: 10.77.0.1\nUsing degraded feature set UDP instead of UDP+EDNS0 for DNS server 10.77.0.1.\n",
+      "nm": "",
+      "peer": ""
+    },
+    "children_reaped": true
+  },
+  "supervisor_process_group_gone": true,
+  "host_after_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+  "host_links_routes_unchanged": true,
+  "host_namespaces_unchanged": true,
+  "status": "failed_or_blocked"
+}

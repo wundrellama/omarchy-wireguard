@@ -2,13 +2,14 @@ import re
 import time
 import ipaddress
 from dataclasses import replace
+from pathlib import PurePosixPath
 from typing import Any, Callable
 
 from .constants import CITY_BUDGET, MAX_RETRY, PAUSE_SECONDS, PROFILE_PREFIX, WIREGUARD_FWMARK
 from .importer import ImportFailure, decode_payload, parse_profiles
 from .nftables import FirewallContext
-from .storage import StateStore
-from .system import DnsRestoreState, HostSystem, SystemFailure
+from .storage import StateCommitError, StateStore
+from .system import DnsRestoreState, HostSystem, SystemFailure, bootstrap_hostname
 
 
 class RequestFailure(ValueError):
@@ -96,8 +97,13 @@ class Controller:
         self.network_policy = store.read("network.json", {})
         # Validate persisted policy before any firewall is generated.
         network_context(self.network_policy, FirewallContext())
-        self.catalog: list[dict[str, Any]] = store.read("profiles.json", [])
+        self.catalog: list[dict[str, Any]] = [
+            {**item, "label": item.get("label", PurePosixPath(item["source_name"]).stem),
+             "role": "internet-exit"} for item in store.read("profiles.json", [])]
         self.dns_restore = _dns_restore_state(store.read("dns.json", []))
+        # dns.json was persisted before any bootstrap mutation. On recovery every
+        # saved link is potentially dirty, even if the selected profile is gone.
+        self.bootstrap_interfaces: set[str] = {item[0] for item in self.dns_restore}
         persisted = store.read("state.json", None)
         if persisted is None:
             persisted = {"enabled": False, "target": None, "mru": []}
@@ -144,11 +150,13 @@ class Controller:
 
     def status(self, args: dict) -> dict:
         self._none(args)
-        target = self._city(self.target)
+        target_profile = self._target_profile()
+        target = self._city(target_profile["city_key"] if target_profile else self.target)
         current = self._profile_summary(self.current) if self.current else None
         return {"mode": self.mode, "enabled": self.enabled, "target": self.target,
                 "current_profile": self.current["id"] if self.current else None,
                 "target_city": target, "current": current,
+                "target_profile": self._profile_summary(target_profile) if target_profile else None,
                 "retry_at": self.retry_at, "pause_until": self.pause_until,
                 "last_error": self.last_error, "notification": self.notification}
 
@@ -156,80 +164,110 @@ class Controller:
         self._none(args)
         cities: dict[str, list[dict]] = {}
         for profile in self.catalog:
+            if not profile["country"] or not profile["city"]:
+                continue
             cities.setdefault(profile["city_key"], []).append({
                 "id": profile["id"], "source_name": profile["source_name"],
                 "country": profile["country"], "city": profile["city"],
             })
         return {"cities": [{"id": key, "country": value[0]["country"], "city": value[0]["city"],
                             "profiles": value} for key, value in sorted(cities.items())],
+                "profiles": [{key: value for key, value in self._profile_summary(item).items()
+                              if key != "city_key"} for item in self.catalog],
                 "mru": list(self.mru)}
 
     def import_profiles(self, args: dict) -> dict:
         proposed_network = args.get("network", self.network_policy)
         network_context(proposed_network, FirewallContext())
+        if self.enabled and proposed_network != self.network_policy:
+            raise RequestFailure("cannot change network policy while enabled; disconnect first")
         files = decode_payload(args, self.controller_uid)
-        profiles, ambiguous = parse_profiles(files, args.get("locations"))
+        sources = {item["source_name"] for item in self.catalog}
+        for name, _raw in files:
+            if name in sources:
+                raise ImportFailure(f"duplicate source_name: {name}; imports are additive only")
+            sources.add(name)
+        profiles, ambiguous = parse_profiles(files, args.get("locations"), args.get("labels"))
         if ambiguous:
             return {"imported": False, "review_required": ambiguous,
                     "message": "country/city inference was ambiguous; resubmit with locations"}
-        old = self.system.managed_profiles()
-        if self.current:
-            self._emergency_disconnect()
         imported: list[dict] = []
         created: list[str] = []
+        identifiers = {item["id"] for item in self.catalog}
+        identifiers.update(name[len(PROFILE_PREFIX):] for name in self.system.managed_profiles().values()
+                           if name.startswith(PROFILE_PREFIX))
+        network_written = False
+        durability_error = None
         try:
-            for index, profile in enumerate(profiles):
-                identifier = f"{_slug(profile.country)}-{_slug(profile.city)}-{index + 1}"
+            for profile in profiles:
+                stem = f"{_slug(profile.country)}-{_slug(profile.city)}"
+                index = 1
+                while f"{stem}-{index}" in identifiers:
+                    index += 1
+                identifier = f"{stem}-{index}"
+                identifiers.add(identifier)
                 name = PROFILE_PREFIX + identifier
                 uuid = self.system.import_profile(profile, name)
                 created.append(uuid)
                 imported.append({"id": identifier, "uuid": uuid, "source_name": profile.source_name,
+                                 "label": profile.label, "role": profile.role,
                                  "country": profile.country, "city": profile.city,
                                  "city_key": profile.city_key, "endpoint_host": profile.endpoint_host,
                                  "endpoint_port": profile.endpoint_port})
-        except Exception:
+            catalog = self.catalog + imported
+            if proposed_network != self.network_policy:
+                try:
+                    self.store.write("network.json", proposed_network)
+                except StateCommitError:
+                    network_written = True
+                    raise
+                network_written = True
+            try:
+                self.store.write("profiles.json", catalog)
+            except StateCommitError as exc:
+                # The catalog already references these UUIDs. Never delete them after commit.
+                durability_error = exc
+        except Exception as exc:
+            rollback_failed = False
+            if network_written:
+                try:
+                    self.store.write("network.json", self.network_policy)
+                except OSError:
+                    rollback_failed = True
             for uuid in created:
                 try:
                     self.system.delete_profile(uuid)
                 except SystemFailure:
-                    pass
-            raise
-        for uuid in old:
-            try:
-                self.system.delete_profile(uuid)
-            except SystemFailure as exc:
-                # New profiles are usable, but ownership would be ambiguous with stale profiles.
-                for created_uuid in created:
-                    try:
-                        self.system.delete_profile(created_uuid)
-                    except SystemFailure:
-                        pass
-                raise SystemFailure("could not retire old managed profiles safely") from exc
-        self.catalog = imported
-        self.store.write("profiles.json", imported)
-        if proposed_network != self.network_policy:
-            self.network_policy = proposed_network
-            self.store.write("network.json", proposed_network)
-        if self.target not in {item["city_key"] for item in imported}:
-            if self.enabled and self.target:
-                self.mode = "failed"
-                self.retry_at = None
-                self.last_error = "selected city is unavailable after import"
-                self._fail_closed()
-                self._persist()
-                self._notify("failed", "Selected WireGuard location is no longer available; traffic remains blocked")
-        elif self.enabled:
-            self._schedule_connecting()
+                    rollback_failed = True
+            message = "could not import or persist new profiles"
+            if rollback_failed:
+                message += "; rollback incomplete: network policy or new NM profiles require inspection"
+            raise ImportFailure(message) from exc
+        self.catalog = catalog
+        self.network_policy = proposed_network
+        if durability_error:
+            raise ImportFailure("profiles committed but durability could not be confirmed; inspect list before retrying") from durability_error
+
         return {"imported": True, "profiles": len(imported),
                 "cities": sorted({item["city_key"] for item in imported}),
                 "status": self.status({})}
 
     def connect(self, args: dict) -> dict:
-        if set(args) != {"city"} or not isinstance(args["city"], str):
-            raise RequestFailure("connect requires only a city string")
-        if args["city"] not in {item["city_key"] for item in self.catalog}:
-            raise RequestFailure("unknown city")
-        self.enabled, self.target, self.mode = True, args["city"], "connecting"
+        if set(args) not in ({"city"}, {"profile"}):
+            raise RequestFailure("connect requires exactly one city or profile string")
+        kind = next(iter(args))
+        value = args[kind]
+        if not isinstance(value, str) or not value:
+            raise RequestFailure("connect requires exactly one city or profile string")
+        key = "city_key" if kind == "city" else "id"
+        if value not in {item[key] for item in self.catalog
+                         if kind == "profile" or (item["country"] and item["city"])}:
+            raise RequestFailure(f"unknown {kind}")
+        target = value if kind == "city" else "profile:" + value
+        for profile in self.catalog:
+            if profile[key] == value:
+                bootstrap_hostname(profile["endpoint_host"])
+        self.enabled, self.target, self.mode = True, target, "connecting"
         self.pause_until = None
         self.retry_count = 0
         self.retry_at = self.clock()
@@ -320,7 +358,11 @@ class Controller:
         self.last_error = "internal safety failure"
 
     def _attempt(self) -> None:
-        profiles = [item for item in self.catalog if item["city_key"] == self.target]
+        if self.target and self.target.startswith("profile:"):
+            selected = self._target_profile()
+            profiles = [selected] if selected else []
+        else:
+            profiles = [item for item in self.catalog if item["city_key"] == self.target]
         order = {identifier: index for index, identifier in enumerate(self.mru)}
         profiles.sort(key=lambda item: order.get(item["id"], len(order)))
         started = self.monotonic()
@@ -338,7 +380,7 @@ class Controller:
                 break
             try:
                 base = network_context(self.network_policy, self.system.inspect_firewall_context(remaining()))
-                base = self._configure_lan_dns(base, remaining)
+                base = self._configure_lan_dns(base, remaining, profile["endpoint_host"])
                 # Permit only resolved's physical-link DNS before resolving a hostname;
                 # all application traffic remains blocked during this transition.
                 self.system.apply_firewall(base, remaining())
@@ -438,7 +480,10 @@ class Controller:
         self.current = None
         self.interface = None
         self.firewall_context = None
-        self._fail_closed()
+        try:
+            self._fail_closed()
+        finally:
+            self._clear_bootstrap_dns()
 
     def _direct_disconnect(self) -> None:
         if self.interface:
@@ -446,19 +491,27 @@ class Controller:
                 self.system.clear_tunnel_dns(self.interface)
             except SystemFailure:
                 pass
-        self.system.deactivate_managed()
+        try:
+            self.system.deactivate_managed()
+        except SystemFailure:
+            self._clear_bootstrap_dns()
+            raise
         self.current = None
         self.interface = None
         self.firewall_context = None
         self.system.restore_lan_dns(self.dns_restore)
+        self.bootstrap_interfaces.clear()
         self.system.remove_firewall()
 
     def _configure_lan_dns(self, base: FirewallContext,
-                           remaining: Callable[[], float]) -> FirewallContext:
+                           remaining: Callable[[], float],
+                           endpoint_host: str | None = None) -> FirewallContext:
+        hostname = bootstrap_hostname(endpoint_host)
         physical = set(base.physical_interfaces)
         stale = tuple(item for item in self.dns_restore if item[0] not in physical)
         if stale:
             self.system.restore_lan_dns(stale, remaining())
+            self.bootstrap_interfaces.difference_update(item[0] for item in stale)
         retained = tuple(item for item in self.dns_restore if item[0] in physical)
         known = {interface for interface, _domains, _default in retained}
         missing = tuple(interface for interface in base.physical_interfaces if interface not in known)
@@ -468,7 +521,30 @@ class Controller:
         if updated != self.dns_restore:
             self.dns_restore = updated
             self.store.write("dns.json", self.dns_restore)
-        return self.system.configure_lan_dns(base, remaining())
+        if hostname:
+            # Register every link before the first mutation, including partial failures.
+            self.bootstrap_interfaces.update(base.physical_interfaces)
+            return self.system.configure_lan_dns(base, remaining(), endpoint_host=hostname)
+        result = self.system.configure_lan_dns(base, remaining())
+        self.bootstrap_interfaces.difference_update(base.physical_interfaces)
+        return result
+
+    def _clear_bootstrap_dns(self) -> None:
+        if not self.bootstrap_interfaces:
+            return
+        try:
+            physical = set(self.system.inspect_firewall_context().physical_interfaces)
+            # Active underlays remain restricted; links that left the underlay recover
+            # their saved baseline. Never snapshot potentially temporary live state.
+            state = tuple((interface, ("~lan",), False) if interface in physical else item
+                          for item in self.dns_restore
+                          for interface in (item[0],) if interface in self.bootstrap_interfaces)
+            self.system.restore_lan_dns(state)
+        except SystemFailure as exc:
+            self.mode, self.last_error = "failed", "endpoint bootstrap DNS cleanup failed"
+            self.retry_at = None
+            raise SystemFailure(self.last_error) from exc
+        self.bootstrap_interfaces.clear()
 
     def _clear_dns_restore(self) -> None:
         self.dns_restore = ()
@@ -485,9 +561,17 @@ class Controller:
         self.notification = {"kind": kind, "message": message, "at": self.clock()}
         self.store.write("notification.json", self.notification)
 
+    def _target_profile(self) -> dict | None:
+        if self.target and self.target.startswith("profile:"):
+            identifier = self.target[len("profile:"):]
+            return next((item for item in self.catalog if item["id"] == identifier), None)
+        return None
+
     def _city(self, key: str | None) -> dict | None:
         for profile in self.catalog:
             if profile["city_key"] == key:
+                if not profile["country"] or not profile["city"]:
+                    return None
                 return {"id": key, "country": profile["country"], "city": profile["city"]}
         if key and "/" in key:
             country, city = key.split("/", 1)
@@ -496,7 +580,9 @@ class Controller:
 
     @staticmethod
     def _profile_summary(profile: dict) -> dict:
-        return {key: profile[key] for key in ("id", "country", "city", "city_key", "source_name")}
+        return {**{key: profile[key] for key in ("id", "country", "city", "city_key", "source_name")},
+                "label": profile.get("label", PurePosixPath(profile["source_name"]).stem),
+                "role": "internet-exit"}
 
     @staticmethod
     def _none(args: dict) -> None:

@@ -1,9 +1,13 @@
 import base64
+import io
 import unittest
+import warnings
+import zipfile
 from dataclasses import replace
 
 from omarchy_wireguard.controller import Controller, RequestFailure, network_context
 from omarchy_wireguard.nftables import FirewallContext
+from omarchy_wireguard.storage import StateCommitError
 from omarchy_wireguard.system import SystemFailure, Verification
 
 
@@ -48,6 +52,7 @@ class FakeSystem:
         self.fail_uuids = set()
         self.activations = []
         self.imported = []
+        self.deleted = []
         self.events = []
         self.dns_configurations = 0
         self.verified_contexts = []
@@ -125,7 +130,7 @@ class FakeSystem:
         return uuid
 
     def delete_profile(self, uuid):
-        pass
+        self.deleted.append(uuid)
 
 
 class ControllerTests(unittest.TestCase):
@@ -138,6 +143,17 @@ class ControllerTests(unittest.TestCase):
 
     def _sleep(self, seconds):
         self.now += seconds
+
+    def test_named_personal_import_bypasses_location_review(self):
+        result = self.controller.handle("import", {
+            "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "home.conf",
+            "labels": {"home.conf": "Home exit"},
+        })
+        self.assertTrue(result["imported"])
+        profile = next(item for item in self.controller.catalog if item["source_name"] == "home.conf")
+        self.assertEqual(profile["label"], "Home exit")
+        self.assertEqual(profile["role"], "internet-exit")
+        self.assertEqual((profile["country"], profile["city"]), ("", ""))
 
     def test_successful_connect_updates_mru_and_persistence(self):
         result = self.controller.connect({"city": "Japan/Tokyo"})
@@ -299,7 +315,7 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(RequestFailure):
             Controller(store, FakeSystem())
 
-    def test_missing_selected_city_after_import_stays_enabled_and_failed(self):
+    def test_additive_import_preserves_failed_target_and_retry(self):
         self.controller.enabled = True
         self.controller.target = "Japan/Tokyo"
         self.controller.mode = "failed"
@@ -311,23 +327,181 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.target, "Japan/Tokyo")
         self.assertEqual(self.controller.mode, "failed")
         self.assertIsNone(self.controller.retry_at)
-        self.assertIsNone(self.system.firewalls[-1].tunnel_interface)
-        self.assertTrue(self.store.values["state.json"]["enabled"])
-        self.assertEqual(self.store.values["state.json"]["target"], "Japan/Tokyo")
+        self.assertEqual(self.system.firewalls, [])
+        self.assertEqual(self.controller.catalog[0]["uuid"], PROFILE["uuid"])
 
-    def test_enabled_reimport_schedules_attempt_without_activating(self):
-        self.controller.enabled = True
-        self.controller.target = "Japan/Tokyo"
-        self.controller.mode = "failed"
-        args = {"data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "jp-tokyo.conf",
-                "locations": {"jp-tokyo.conf": {"country": "Japan", "city": "Tokyo"}}}
-        result = self.controller.import_profiles(args)
-        self.assertEqual(result["status"]["mode"], "connecting")
-        self.assertEqual(result["status"]["retry_at"], self.now)
-        self.assertEqual(self.system.activations, [])
+    def test_additive_import_preserves_healthy_tunnel_and_old_profiles(self):
+        self.controller.connect({"city": "Japan/Tokyo"})
         self.controller.tick()
-        self.assertEqual(self.controller.mode, "connected")
-        self.assertEqual(self.system.activations, ["new-0"])
+        before = self.controller.status({})
+        old_catalog = list(self.controller.catalog)
+        old_context = self.controller.firewall_context
+        deactivations = self.system.deactivations
+        self.system.managed_profiles = lambda: {"uuid-1": "old", "orphan-uuid": "orphan"}
+        result = self.controller.import_profiles({
+            "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "us-seattle.conf"})
+        self.assertEqual(result["status"], before)
+        self.assertEqual(self.controller.catalog[:1], old_catalog)
+        self.assertEqual(len(self.controller.catalog), 2)
+        self.assertEqual(self.store.values["profiles.json"], self.controller.catalog)
+        self.assertIs(self.controller.firewall_context, old_context)
+        self.assertEqual(self.system.deactivations, deactivations)
+        self.assertEqual(self.system.activations, ["uuid-1"])
+        self.assertEqual(self.system.deleted, [])
+
+    def test_duplicate_source_names_are_rejected_before_side_effects(self):
+        for names in (("jp-tokyo.conf",), ("us-seattle.conf", "us-seattle.conf")):
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w") as zipped:
+                for name in names:
+                    # Duplicate members are legal ZIP input, but not a legal import batch.
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        zipped.writestr(name, IMPORT_CONFIG)
+            with self.subTest(names=names), self.assertRaisesRegex(RequestFailure, "duplicate source_name"):
+                self.controller.handle("import", {
+                    "data": base64.b64encode(archive.getvalue()).decode(), "name": "profiles.zip"})
+            self.assertEqual(self.system.imported, [])
+            self.assertEqual(self.system.deleted, [])
+            self.assertEqual(self.system.deactivations, 0)
+            self.assertEqual(len(self.controller.catalog), 1)
+
+    def test_new_ids_do_not_collide_across_batches_or_restart(self):
+        old = dict(self.controller.catalog[0])
+        for name in ("jp-tokyo-2.conf", "jp-tokyo-3.conf"):
+            self.controller.import_profiles({
+                "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": name,
+                "locations": {name: {"country": "Japan", "city": "Tokyo"}},
+            })
+            self.controller = Controller(self.store, self.system)
+        self.assertEqual(self.controller.catalog[0], old)
+        identifiers = [item["id"] for item in self.controller.catalog]
+        self.assertEqual(len(set(identifiers)), 3)
+        self.assertEqual(len({item[2] for item in self.system.imported}), 2)
+
+    def test_import_does_not_reuse_orphan_managed_connection_names(self):
+        self.system.managed_profiles = lambda: {
+            "orphan-uuid": "omarchy-wireguard-united-states-seattle-1"}
+        self.controller.import_profiles({
+            "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "us-seattle.conf"})
+        self.assertNotEqual(self.system.imported[0][2], "omarchy-wireguard-united-states-seattle-1")
+        self.assertEqual(self.system.deleted, [])
+
+    def test_catalog_write_failure_rolls_back_new_profiles_without_publishing(self):
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        before = self.controller.status({})
+        old_catalog = list(self.controller.catalog)
+        persisted = self.store.values["profiles.json"]
+        deactivations = self.system.deactivations
+        def fail_write(name, value):
+            self.assertEqual(self.controller.catalog, old_catalog)
+            raise OSError("disk full")
+        self.store.write = fail_write
+        with self.assertRaisesRegex(RequestFailure, "persist|import"):
+            self.controller.handle("import", {
+                "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "us-seattle.conf"})
+        self.assertEqual(self.controller.catalog, old_catalog)
+        self.assertEqual(self.store.values["profiles.json"], persisted)
+        self.assertEqual(self.system.deleted, ["new-0"])
+        self.assertEqual(self.controller.status({}), before)
+        self.assertEqual(self.system.deactivations, deactivations)
+
+    def test_import_policy_persistence_failure_preserves_old_catalog_and_policy(self):
+        for failing_name in ("network.json", "profiles.json"):
+            with self.subTest(failing_name=failing_name):
+                store = MemoryStore({"profiles.json": [dict(PROFILE)], "network.json": {}})
+                system = FakeSystem()
+                controller = Controller(store, system)
+                old_catalog = list(controller.catalog)
+                write = store.write
+                def fail_write(name, value):
+                    if name == failing_name:
+                        raise OSError("disk full")
+                    write(name, value)
+                store.write = fail_write
+                with self.assertRaisesRegex(RequestFailure, "persist|import"):
+                    controller.handle("import", {
+                        "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(),
+                        "name": "us-seattle.conf", "network": {"lan_resolvers": ["192.168.1.1"]}})
+                self.assertEqual(controller.catalog, old_catalog)
+                self.assertEqual(store.values["profiles.json"], [PROFILE])
+                self.assertEqual(controller.network_policy, {})
+                self.assertEqual(store.values["network.json"], {})
+                self.assertEqual(system.deleted, ["new-0"])
+                self.assertEqual(system.deactivations, 0)
+
+    def test_committed_catalog_is_not_rolled_back_on_durability_error(self):
+        write = self.store.write
+        def commit_then_fail(name, value):
+            write(name, value)
+            if name == "profiles.json":
+                raise StateCommitError("fsync failed")
+        self.store.write = commit_then_fail
+        with self.assertRaisesRegex(RequestFailure, "committed.*durability"):
+            self.controller.handle("import", {
+                "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "us-seattle.conf"})
+        self.assertEqual(len(self.store.values["profiles.json"]), 2)
+        self.assertEqual(self.controller.catalog, self.store.values["profiles.json"])
+        self.assertEqual(self.system.deleted, [])
+
+    def test_network_rename_error_restores_policy_before_rolling_back_import(self):
+        write = self.store.write
+        def commit_policy_then_fail(name, value):
+            write(name, value)
+            if name == "network.json" and value:
+                raise StateCommitError("fsync failed")
+        self.store.write = commit_policy_then_fail
+        with self.assertRaises(RequestFailure):
+            self.controller.handle("import", {
+                "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "us-seattle.conf",
+                "network": {"lan_resolvers": ["192.168.1.1"]}})
+        self.assertEqual(self.store.values.get("network.json", {}), {})
+        self.assertEqual(self.controller.network_policy, {})
+        self.assertEqual(self.system.deleted, ["new-0"])
+        self.assertEqual(len(self.controller.catalog), 1)
+
+    def test_failed_policy_rollback_still_cleans_new_nm_profiles(self):
+        write = self.store.write
+        def fail_catalog_and_restore(name, value):
+            if name == "profiles.json" or (name == "network.json" and not value):
+                raise OSError("disk unavailable")
+            write(name, value)
+        self.store.write = fail_catalog_and_restore
+        with self.assertRaisesRegex(RequestFailure, "rollback incomplete"):
+            self.controller.handle("import", {
+                "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "us-seattle.conf",
+                "network": {"lan_resolvers": ["192.168.1.1"]}})
+        self.assertEqual(self.system.deleted, ["new-0"])
+        self.assertEqual(len(self.controller.catalog), 1)
+        self.assertEqual(self.controller.network_policy, {})
+        self.assertEqual(self.system.deactivations, 0)
+
+    def test_named_profile_without_geography_is_not_a_legacy_city(self):
+        self.controller.import_profiles({
+            "data": base64.b64encode(IMPORT_CONFIG.encode()).decode(), "name": "home.conf",
+            "labels": {"home.conf": "Home"}})
+        profile = self.controller.catalog[-1]
+        self.assertEqual([item["id"] for item in self.controller.list_profiles({})["cities"]], ["Japan/Tokyo"])
+        with self.assertRaisesRegex(RequestFailure, "unknown city"):
+            self.controller.connect({"city": "/"})
+        result = self.controller.connect({"profile": profile["id"]})
+        self.assertIsNone(result["target_city"])
+        self.assertEqual(result["target_profile"]["label"], "Home")
+        self.controller.tick()
+        self.assertEqual(self.system.activations, [profile["uuid"]])
+
+    def test_profile_target_selects_exact_id_despite_city_mru(self):
+        self.controller.catalog.append({**PROFILE_2, "label": "Other exit", "role": "internet-exit"})
+        self.controller.mru = [PROFILE["id"]]
+        result = self.controller.connect({"profile": PROFILE_2["id"]})
+        self.assertEqual(result["target"], "profile:" + PROFILE_2["id"])
+        self.assertEqual(result["target_profile"]["id"], PROFILE_2["id"])
+        self.assertEqual(result["target_profile"]["label"], "Other exit")
+        self.assertEqual(self.store.values["state.json"]["target"], "profile:" + PROFILE_2["id"])
+        self.controller.tick()
+        self.assertEqual(self.system.activations, [PROFILE_2["uuid"]])
+        self.assertEqual(self.controller.status({})["current"]["id"], PROFILE_2["id"])
 
     def test_same_city_failover_and_mru_preference(self):
         self.controller.catalog = [dict(PROFILE), dict(PROFILE_2)]
@@ -344,6 +518,21 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.system.activations, [])
         self.controller.tick()
         self.assertEqual(self.system.activations[0], "uuid-2")
+
+    def test_list_normalizes_legacy_labels_and_roles_without_rewriting_ids(self):
+        listed = self.controller.list_profiles({})
+        self.assertEqual(listed.get("profiles"), [{
+            "id": PROFILE["id"], "label": "jp-tokyo", "role": "internet-exit",
+            "source_name": PROFILE["source_name"], "country": "Japan", "city": "Tokyo",
+        }])
+        self.assertEqual(self.controller.catalog[0]["label"], "jp-tokyo")
+        self.assertEqual(self.controller.catalog[0]["role"], "internet-exit")
+        self.assertEqual(self.controller.catalog[0]["uuid"], PROFILE["uuid"])
+        self.controller.connect({"city": "Japan/Tokyo"})
+        self.controller.tick()
+        current = self.controller.status({})["current"]
+        self.assertEqual(current["label"], "jp-tokyo")
+        self.assertEqual(current["role"], "internet-exit")
 
     def test_list_has_normalized_locations_without_endpoints(self):
         listed = self.controller.list_profiles({})

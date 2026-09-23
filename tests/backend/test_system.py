@@ -145,12 +145,35 @@ class SystemTests(unittest.TestCase):
         self.assertEqual(runner.calls[-1][0],
                          ["resolvectl", "default-route", "eth0", "yes"])
 
+    def test_tunnel_dns_requests_unescaped_ipv6_from_nmcli(self):
+        class NmcliEscapingRunner:
+            def __init__(self):
+                self.writes = []
+
+            def run(self, argv, **kwargs):
+                if argv[0] == 'nmcli':
+                    if 'ipv4.dns' in argv:
+                        return '192.0.2.53\n'
+                    address = '2001:db8::53'
+                    if argv[1:3] != ['--escape', 'no']:
+                        address = address.replace(':', '\\:')
+                    return address + '\n'
+                self.writes.append(argv)
+                return ''
+
+        runner = NmcliEscapingRunner()
+        self.assertEqual(HostSystem(runner).configure_tunnel_dns(
+                         '00000000-0000-0000-0000-000000000001', 'owg-test'),
+                         ('192.0.2.53', '2001:db8::53'))
+        self.assertEqual(runner.writes[0],
+                         ['resolvectl', 'dns', 'owg-test', '192.0.2.53', '2001:db8::53'])
+
     def test_configures_tunnel_dns_from_nm_profile_with_fixed_order(self):
         uuid = "00000000-0000-0000-0000-000000000001"
         runner = FakeRunner({
-            ("nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid):
+            ("nmcli", "--escape", "no", "-g", "ipv4.dns", "connection", "show", "uuid", uuid):
                 "1.1.1.1, 9.9.9.9\n",
-            ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid):
+            ("nmcli", "--escape", "no", "-g", "ipv6.dns", "connection", "show", "uuid", uuid):
                 "2606:4700:4700::1111\n",
             ("resolvectl", "dns", "owg-test", "1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"): "",
             ("resolvectl", "domain", "owg-test", "~."): "",
@@ -166,8 +189,8 @@ class SystemTests(unittest.TestCase):
         uuid = "00000000-0000-0000-0000-000000000001"
         for ipv4 in ("", "1.1.1.1;evil"):
             runner = FakeRunner({
-                ("nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid): ipv4,
-                ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid): "",
+                ("nmcli", "--escape", "no", "-g", "ipv4.dns", "connection", "show", "uuid", uuid): ipv4,
+                ("nmcli", "--escape", "no", "-g", "ipv6.dns", "connection", "show", "uuid", uuid): "",
             })
             with self.assertRaises(SystemFailure):
                 HostSystem(runner).configure_tunnel_dns(uuid, "owg-test")
@@ -206,35 +229,21 @@ class SystemTests(unittest.TestCase):
         self.assertEqual(set(context.local_interfaces), {"docker0", "veth123"})
 
     def test_import_sets_deterministic_interface_dns_and_permissions(self):
-        fd, path = tempfile.mkstemp()
-        uuid = "00000000-0000-0000-0000-000000000001"
-        name = "omarchy-wireguard-japan-tokyo-1"
-        import_command = ("nmcli", "connection", "import", "type", "wireguard", "file", path)
-        runner = FakeRunner({import_command: f"Connection imported ({uuid})\n"})
-        profile = Profile("jp.conf", "Japan", "Tokyo", "192.0.2.1", 51820,
-                          "[Interface]\nPrivateKey = secret\n")
-        with patch("omarchy_wireguard.system.tempfile.mkstemp", return_value=(fd, path)):
-            # Accept the deterministic modify command after observing it.
-            original = runner.run
-            def run(argv, *, stdin=None, timeout=10):
-                if argv[:5] == ["nmcli", "connection", "modify", "uuid", uuid]:
-                    runner.calls.append((argv, stdin, timeout))
-                    return ""
-                return original(argv, stdin=stdin, timeout=timeout)
-            runner.run = run
-            HostSystem(runner, controller_uid=os.getuid()).import_profile(profile, name)
-        modify = runner.calls[-1][0]
-        self.assertIn("connection.interface-name", modify)
-        self.assertIn("wireguard.fwmark", modify)
-        self.assertEqual(modify[modify.index("wireguard.fwmark") + 1], "0x6f7467")
-        self.assertNotIn("7304295", modify)
-        self.assertIn("ipv4.dns-search", modify)
-        self.assertIn("~.", modify)
-        self.assertEqual(modify[modify.index("ipv4.dns-priority") + 1], "10")
-        self.assertNotIn("ipv6.dns-priority", modify)
-        self.assertNotIn("ipv6.dns-search", modify)
-        self.assertNotIn("-100", modify)
-        self.assertIn("user:" + pwd.getpwuid(os.getuid()).pw_name, modify)
+        from test_atomic_import import profile, Runner, NAME, UUID
+        from omarchy_wireguard.system import _profile_keyfile
+        runner = Runner()
+        captured = []
+        def publish(text):
+            captured.append(text)
+            runner.present = True
+        with patch('omarchy_wireguard.system.uuid_module.uuid4', return_value=UUID), \
+                patch('omarchy_wireguard.system.publish_keyfile', side_effect=publish):
+            HostSystem(runner, controller_uid=os.getuid()).import_profile(profile(), NAME)
+        expected = _profile_keyfile(profile(), NAME, UUID, os.getuid())
+        self.assertEqual(captured, [expected])
+        self.assertIn('autoconnect=false', expected)
+        self.assertIn('permissions=user:' + pwd.getpwuid(os.getuid()).pw_name + ':;', expected)
+        self.assertFalse(any('modify' in call for call in runner.calls))
 
     def test_activation_reasserts_positive_tunnel_dns_before_up(self):
         uuid = "00000000-0000-0000-0000-000000000001"

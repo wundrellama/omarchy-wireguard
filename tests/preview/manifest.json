@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "wundrellama.wireguard-preview",
+  "name": "WireGuard visual preview (no networking)",
+  "version": "0.1.0",
+  "author": "wundrellama",
+  "license": "MIT",
+  "description": "Development-only fixture rendering the actual panel without a live backend.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "tests/preview/Preview.qml"},
+  "barWidget": {
+    "displayName": "VPN preview",
+    "description": "Synthetic visual-test fixture. No VPN operations.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

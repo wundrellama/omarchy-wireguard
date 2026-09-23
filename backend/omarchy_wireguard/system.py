@@ -5,7 +5,11 @@ import os
 import pwd
 import re
 import subprocess
-import tempfile
+import base64
+import configparser
+import uuid as uuid_module
+
+from .nm_import import publish_keyfile
 import time
 from dataclasses import dataclass, replace
 
@@ -27,6 +31,26 @@ class Verification:
 
 
 DnsRestoreState = tuple[tuple[str, tuple[str, ...], bool], ...]
+
+
+def bootstrap_hostname(host: str | None) -> str | None:
+    """Return a safe full DNS hostname, never an input routing-domain expression.
+
+    resolved routes suffixes: descendants of this hostname also match. This is
+    deliberately not a QNAME firewall. Numeric endpoints need no DNS exception.
+    """
+    if host is None:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    if (not isinstance(host, str) or len(host) > 253 or '.' not in host or
+            not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label)
+                    for label in host.split('.'))):
+        raise SystemFailure("invalid endpoint bootstrap hostname")
+    return host
 
 
 class CommandRunner:
@@ -52,51 +76,29 @@ class HostSystem:
     def import_profile(self, profile: Profile, connection_name: str) -> str:
         if not re.fullmatch(rf"{PROFILE_PREFIX}[a-z0-9-]+", connection_name):
             raise SystemFailure("invalid managed profile name")
-        fd, path = tempfile.mkstemp(prefix="import-", suffix=".conf", dir="/run/omarchy-wireguard")
-        uuid = None
+        uuid = str(uuid_module.uuid4())
+        # Refuse collisions before either publication or rollback. AddConnection2
+        # adds, never updates: a catalog identity must never be reused/deleted.
+        existing = self.runner.run(["nmcli", "-t", "-f", "UUID", "connection", "show"])
+        if uuid in existing.splitlines():
+            raise SystemFailure("NetworkManager profile UUID already exists")
+        text = _profile_keyfile(profile, connection_name, uuid, self.controller_uid)
         try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                fd = -1
-                stream.write(profile.config)
-                stream.flush()
-                os.fsync(stream.fileno())
-            output = self.runner.run(["nmcli", "connection", "import", "type", "wireguard", "file", path])
-            match = re.search(r"\(([0-9a-fA-F-]{36})\)", output)
-            if not match:
-                raise SystemFailure("NetworkManager did not return an imported UUID")
-            uuid = match.group(1)
-            interface = "owg-" + hashlib.sha256(connection_name.encode("ascii")).hexdigest()[:10]
-            permissions = ""
-            if self.controller_uid is not None:
-                try:
-                    permissions = "user:" + pwd.getpwuid(self.controller_uid).pw_name
-                except KeyError as exc:
-                    raise SystemFailure("controller UID has no account") from exc
-            self.runner.run(["nmcli", "connection", "modify", "uuid", uuid,
-                             "connection.id", connection_name,
-                             "connection.interface-name", interface,
-                             "connection.autoconnect", "no",
-                             "connection.permissions", permissions,
-                             "wireguard.fwmark", WIREGUARD_FWMARK_TEXT,
-                             "ipv4.never-default", "no",
-                             "ipv4.dns-priority", str(WIREGUARD_DNS_PRIORITY),
-                             "ipv4.dns-search", "~."])
+            publish_keyfile(text)
+            actual = self.runner.run(["nmcli", "-g", "connection.id", "connection", "show", "uuid", uuid]).strip()
+            if actual != connection_name:
+                raise SystemFailure("NetworkManager profile identity verification failed")
             return uuid
-        except Exception:
-            if uuid is not None:
-                try:
-                    self.delete_profile(uuid)
-                except SystemFailure:
-                    pass
-            raise
-        finally:
-            if fd >= 0:
-                os.close(fd)
+        except Exception as exc:
+            # A timed-out reply may follow a successful add. Delete only this
+            # previously absent UUID, and only if its exact identity still matches.
             try:
-                os.unlink(path)
-            except FileNotFoundError:
+                actual = self.runner.run(["nmcli", "-g", "connection.id", "connection", "show", "uuid", uuid]).strip()
+                if actual == connection_name:
+                    self.delete_profile(uuid)
+            except SystemFailure:
                 pass
+            raise SystemFailure("NetworkManager profile import failed") from exc
 
     def managed_profiles(self) -> dict[str, str]:
         output = self.runner.run(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"])
@@ -224,18 +226,23 @@ class HostSystem:
             state.append((interface, domains, default_route))
         return tuple(state)
 
-    def configure_lan_dns(self, context: FirewallContext, timeout: float = 10) -> FirewallContext:
+    def configure_lan_dns(self, context: FirewallContext, timeout: float = 10,
+                          *, endpoint_host: str | None = None) -> FirewallContext:
+        hostname = bootstrap_hostname(endpoint_host)
+        domains = ("~lan",) + (("~" + hostname,) if hostname else ())
         if not context.physical_interfaces:
             return context
         each = max(0.1, timeout / (len(context.physical_interfaces) * 3))
         resolvers = set(context.lan_resolvers)
         dns_links = []
         for interface in context.physical_interfaces:
-            self.runner.run(["resolvectl", "domain", interface, "~lan"], timeout=each)
+            self.runner.run(["resolvectl", "domain", interface, *domains], timeout=each)
             self.runner.run(["resolvectl", "default-route", interface, "no"], timeout=each)
             addresses = _resolved_addresses(self.runner.run(["resolvectl", "dns", interface], timeout=each))
             resolvers.update(addresses)
             dns_links.append((interface, addresses))
+        if hostname and not any(addresses for _interface, addresses in dns_links):
+            raise SystemFailure("no physical DNS for endpoint bootstrap")
         return replace(context, lan_resolvers=tuple(sorted(resolvers)), lan_dns_links=tuple(dns_links))
 
     def configure_tunnel_dns(self, uuid: str, interface: str,
@@ -246,8 +253,8 @@ class HostSystem:
             raise SystemFailure("invalid tunnel interface")
         each = max(0.1, timeout / 5)
         outputs = [
-            self.runner.run(["nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid], timeout=each),
-            self.runner.run(["nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid], timeout=each),
+            self.runner.run(["nmcli", "--escape", "no", "-g", "ipv4.dns", "connection", "show", "uuid", uuid], timeout=each),
+            self.runner.run(["nmcli", "--escape", "no", "-g", "ipv6.dns", "connection", "show", "uuid", uuid], timeout=each),
         ]
         servers = []
         for output in outputs:
@@ -300,7 +307,9 @@ class HostSystem:
         expected_tunnel_dns = firewall_context.tunnel_dns if firewall_context else ()
         each = max(0.1, timeout / (9 + len(expected_dns) * 3))
         active = self.runner.run(["nmcli", "-g", "GENERAL.STATE,GENERAL.DEVICES", "connection", "show", "uuid", uuid], timeout=each)
-        profile_ok = "activated" in active.lower() and interface in active
+        active_fields = active.strip().splitlines()
+        profile_ok = (len(active_fields) == 2 and active_fields[0].strip() == "activated"
+                      and active_fields[1].strip() == interface)
         mark_text = self.runner.run(["wg", "show", interface, "fwmark"], timeout=each).strip()
         try:
             fwmark_ok = int(mark_text, 0) == WIREGUARD_FWMARK
@@ -342,13 +351,72 @@ class HostSystem:
         dns_ok = tunnel_dns and lan_split
         handshakes = self.runner.run(["wg", "show", interface, "latest-handshakes"], timeout=each)
         timestamps = [int(line.rsplit("\t", 1)[-1]) for line in handshakes.splitlines() if line.rsplit("\t", 1)[-1].isdigit()]
-        handshake_ok = bool(timestamps) and max(timestamps) > 0 and now - max(timestamps) <= STALE_HANDSHAKE
+        handshake_ok = bool(timestamps) and max(timestamps) > 0 and 0 <= now - max(timestamps) <= STALE_HANDSHAKE
         checks = {"profile_interface": profile_ok, "wireguard_fwmark": fwmark_ok,
                   "firewall_policy": firewall_ok, "ipv4_default": ipv4_ok,
                   "ipv6_tunneled_or_blocked": ipv6_tunnel or ipv6_blocked,
                   "split_dns": dns_ok, "handshake_fresh": handshake_ok}
         failed = [name for name, passed in checks.items() if not passed]
         return Verification(not failed, checks, "ok" if not failed else "failed: " + ", ".join(failed))
+
+
+def _profile_keyfile(profile: Profile, name: str, uuid: str, uid: int | None) -> str:
+    """Translate the validated WG subset, keeping secrets off argv and disk."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(profile.config)
+        wg, peer = parser["Interface"], parser["Peer"]
+        # Validate base64 before using a public key as a keyfile section name.
+        for key in (wg["PrivateKey"], peer["PublicKey"], peer.get("PresharedKey")):
+            if key is not None and len(base64.b64decode(key, validate=True)) != 32:
+                raise ValueError("invalid key length")
+        addresses = [ipaddress.ip_interface(v.strip()) for v in wg["Address"].split(",")]
+        dns = [ipaddress.ip_address(v.strip()) for v in wg["DNS"].split(",")]
+        allowed = [str(ipaddress.ip_network(v.strip(), strict=False))
+                   for v in peer["AllowedIPs"].split(",") if v.strip()]
+        permissions = ""
+        if uid is not None:
+            user = pwd.getpwuid(uid).pw_name
+            if not re.fullmatch(r"[A-Za-z0-9_.@$-]+", user):
+                raise ValueError("unsafe account name")
+            permissions = "user:" + user + ":;"
+        interface = "owg-" + hashlib.sha256(name.encode("ascii")).hexdigest()[:10]
+        lines = ["[connection]", f"id={name}", f"uuid={uuid}", "type=wireguard",
+                 "autoconnect=false", f"interface-name={interface}", f"permissions={permissions}",
+                 "", "[wireguard]", f"private-key={wg['PrivateKey']}", "private-key-flags=0",
+                 f"fwmark={WIREGUARD_FWMARK}", "peer-routes=true"]
+        # libnm's keyfile reader can silently discard out-of-range values.
+        # MTU is a guint32 (zero selects the default); listen-port is uint16.
+        for source, target, maximum in (("ListenPort", "listen-port", 65535),
+                                        ("MTU", "mtu", 4294967295)):
+            if source in wg:
+                value = int(wg[source])
+                if not 0 <= value <= maximum:
+                    raise ValueError("numeric setting out of range")
+                lines.append(f"{target}={value}")
+        keepalive = int(peer.get('PersistentKeepalive', '0'))
+        if not 0 <= keepalive <= 65535:
+            raise ValueError("persistent keepalive out of range")
+        lines += ["", f"[wireguard-peer.{peer['PublicKey']}]",
+                  f"endpoint={peer['Endpoint']}",
+                  f"persistent-keepalive={keepalive}",
+                  "allowed-ips=" + ";".join(allowed) + ";"]
+        if "PresharedKey" in peer:
+            lines += [f"preshared-key={peer['PresharedKey']}", "preshared-key-flags=0"]
+        for version in (4, 6):
+            family_addresses = [str(v) for v in addresses if v.version == version]
+            family_dns = [str(v) for v in dns if v.version == version]
+            method = "manual" if family_addresses else ("auto" if family_dns else "disabled")
+            lines += ["", f"[ipv{version}]", f"method={method}", "never-default=false",
+                      "ignore-auto-dns=true", f"dns-priority={WIREGUARD_DNS_PRIORITY}"]
+            if method != "disabled":
+                lines.append("dns-search=~.;")
+            lines += [f"address{i}={v}" for i, v in enumerate(family_addresses, 1)]
+            if family_dns:
+                lines.append("dns=" + ";".join(family_dns) + ";")
+        return "\n".join(lines) + "\n"
+    except (KeyError, ValueError, configparser.Error) as exc:
+        raise SystemFailure("invalid WireGuard profile settings") from exc
 
 
 def _is_underlay(name: str, link: dict, local: set[str]) -> bool:

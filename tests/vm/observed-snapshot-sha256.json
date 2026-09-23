@@ -1,0 +1,21 @@
+{
+  "backend/omarchy_wireguard/__init__.py": "181b05ebfdbbaf2105fefdb46528360200c8a033d44b5744039ab28e9eacbc0f",
+  "backend/omarchy_wireguard/__main__.py": "ac51882c8e8dd0e55a1cf27ab5d9fb1b5ee8ea8a3b099687f1d03a53c761433e",
+  "backend/omarchy_wireguard/constants.py": "5b3e50fd3c75f5180c0dc33a2961ae5c8df2b15ec40e5a75e1a1c037783b65d4",
+  "backend/omarchy_wireguard/daemon.py": "e16c0fd6839e85753cc40d1bb0c8a2e72c9ee84ede2daf2e5fa9a53ddd0959bb",
+  "backend/omarchy_wireguard/nftables.py": "4de1076b0b1fac7df7a39bfbedd987590459ef055fb19ac74ac7453f2013615c",
+  "backend/omarchy_wireguard/protocol.py": "33769a5f63c20fb080caade078c5a81ba7de1b89c99491f8c1de60ed7808c552",
+  "backend/omarchy_wireguard/importer.py": "47619a8aaedc74fdc7915c1e636039728eda3f53a64ac2c57f0f49a68fced1a9",
+  "backend/omarchy_wireguard/storage.py": "4713548ba6987ee0f2e897629df86ebbf035dd5968bc2f531d2f174c6a11d17f",
+  "backend/omarchy_wireguard/controller.py": "1231eeb4ae46cbb6472a43403a513ca6812c1914c03a787a7f4020431c8d37d1",
+  "backend/omarchy_wireguard/nm_import.py": "5e57782a4e5c508490f81ce43d804d3c027dfcb1c3589a88d36422e76ab027c8",
+  "backend/omarchy_wireguard/system.py": "afb5be466a9112a4b4d4d51f002036d022228bae448f33f7ff622bd76ee62667",
+  "bin/omarchy-wireguard": "2005c1e6ec751b72ea847c5f70aec425310e20bcc022fd66048e20e3f67f7fee",
+  "scripts/integrate-user": "a9444759bbddf0d3012713f4302e1ab2b692525bb6ba28c02efba9a9435d36f5",
+  "scripts/uninstall-backend": "a4963854bb0494162846c2ca0d6af97a2f1f16b6a0d70cf0470e7c479bc65ee9",
+  "scripts/install-backend": "c73791dfa53c67c3f8906999d9a5ae40edc174c7c5ca10557ea81de2b9331f09",
+  "packaging/systemd/50-omarchy-wireguard.conf": "c944335bf670d137299650e04329cb67f353b9a9352549f1502d5040deff8989",
+  "packaging/systemd/backend.conf.example": "5ecb9d6863d563680531ed06bbbb34fdbbc6a833823eda696e37d1c6dfe96b4c",
+  "packaging/systemd/omarchy-wireguard-firewall.service": "34863046b9f3d93490fd87dca4de52e850304f43da1b2d5cbad5ba39330cb66e",
+  "packaging/systemd/omarchy-wireguard.service": "ba48b6c3120badefa4b4ad958e101d152a83cc8d130320a723f65e212f6d438d"
+}

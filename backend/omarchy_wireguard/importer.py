@@ -25,6 +25,8 @@ class Profile:
     endpoint_host: str
     endpoint_port: int
     config: str = field(repr=False)
+    label: str = ""
+    role: str = "internet-exit"
 
     @property
     def city_key(self) -> str:
@@ -147,7 +149,7 @@ def _read_directory(directory_fd: int, owner_uid: int) -> list[tuple[str, bytes]
 
 
 def decode_payload(args: dict, owner_uid: int | None = None) -> list[tuple[str, bytes]]:
-    allowed = {"path", "data", "name", "locations", "network"}
+    allowed = {"path", "data", "name", "locations", "network", "labels"}
     if set(args) - allowed:
         raise ImportFailure("unknown import argument")
     if ("path" in args) == ("data" in args):
@@ -205,30 +207,47 @@ def expand_archives(files: Iterable[tuple[str, bytes]]) -> list[tuple[str, bytes
     return output
 
 
-def parse_profiles(files: Iterable[tuple[str, bytes]], locations: dict | None = None) -> tuple[list[Profile], list[str]]:
+def parse_profiles(files: Iterable[tuple[str, bytes]], locations: dict | None = None,
+                   labels: dict | None = None) -> tuple[list[Profile], list[str]]:
     profiles: list[Profile] = []
     ambiguous: list[str] = []
     if locations is not None and not isinstance(locations, dict):
         raise ImportFailure("locations must be an object")
     locations = locations or {}
+    if labels is not None and not isinstance(labels, dict):
+        raise ImportFailure("labels must be an object")
+    labels = labels or {}
+    files = list(files)
+    names = {name for name, _raw in files}
+    if set(labels) - names:
+        raise ImportFailure("labels must use exact source_name keys from this batch")
+    for label in labels.values():
+        if (not isinstance(label, str) or not label.strip() or len(label) > 128 or
+                not label.isprintable()):
+            raise ImportFailure("label must be nonempty printable text of at most 128 characters")
     for name, raw in files:
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ImportFailure(f"{name}: configuration is not UTF-8") from exc
         profile = parse_config(name, text)
+        if name in labels:
+            profile = replace(profile, label=labels[name])
         location = locations.get(name)
         if location is not None:
             if not isinstance(location, dict) or set(location) != {"country", "city"}:
                 raise ImportFailure(f"{name}: invalid location review")
-            profile = replace(profile, country=_location(location["country"]), city=_location(location["city"]))
-        if not profile.country or not profile.city:
+            profile = replace(profile, country=_location(location["country"], name in labels),
+                              city=_location(location["city"], name in labels))
+        if (not profile.country or not profile.city) and name not in labels:
             ambiguous.append(name)
         profiles.append(profile)
     return profiles, ambiguous
 
 
-def _location(value: object) -> str:
+def _location(value: object, allow_empty: bool = False) -> str:
+    if allow_empty and value == "":
+        return ""
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9 .'-]{2,64}", value):
         raise ImportFailure("invalid location")
     return value.strip()
@@ -299,7 +318,7 @@ def parse_config(name: str, text: str) -> Profile:
     peer["PersistentKeepalive"] = "25"
     output = _render_config(interface, peer)
     country, city = infer_location(name, host)
-    return Profile(name, country, city, host, port, output)
+    return Profile(name, country, city, host, port, output, PurePosixPath(name).stem)
 
 
 def _canonical_section(name: str, section: configparser.SectionProxy,

@@ -1,0 +1,350 @@
+{
+  "host_netns": "net:[4026531833]",
+  "host_before_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+  "kernel_release": "7.2.5-4-omarchy",
+  "backend_sha256": {
+    "nftables.py": "4de1076b0b1fac7df7a39bfbedd987590459ef055fb19ac74ac7453f2013615c",
+    "system.py": "4ecb716c248efa40f379e1b22373c3bfb9507979816366cfafdbfae57ded787c",
+    "constants.py": "5b3e50fd3c75f5180c0dc33a2961ae5c8df2b15ec40e5a75e1a1c037783b65d4"
+  },
+  "host_direct_invocation_refused": true,
+  "timeout_seconds_per_scenario": 60,
+  "artifact_directory": "/home/michael/.hermes/cache/scratch/wireguard-netns-mnruq4_0",
+  "scenarios": [
+    {
+      "name": "packet_tests",
+      "exit_code": 0,
+      "stderr": "",
+      "result": {
+        "namespace": "net:[4026533963]",
+        "host_namespace": "net:[4026531833]",
+        "checks": [
+          {
+            "name": "fresh_isolated_namespace",
+            "passed": true
+          },
+          {
+            "name": "peer_namespace_is_distinct",
+            "passed": true,
+            "namespace": "net:[4026534548]"
+          },
+          {
+            "name": "baseline_ipv4_default_reachable",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "received": {
+              "token": "67a0c3827b764c6084f56a813cb4c339",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "baseline_ipv4_default_reachable_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "baseline_ipv6_default_reachable",
+            "passed": true,
+            "destination": "2001:db8:2::80",
+            "received": {
+              "token": "a4a03783a91b4890b8150557df8bc69e",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "baseline_ipv6_default_reachable_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "baseline_lan_reachable",
+            "passed": true,
+            "destination": "192.0.2.2",
+            "received": {
+              "token": "22158a71aedc439db941b94ba9f97ea5",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "baseline_lan_reachable_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "real_render_passes_nft_check",
+            "passed": true
+          },
+          {
+            "name": "adapter_first_creation_applied",
+            "passed": true
+          },
+          {
+            "name": "enabled_tunnel_absent_existing_ipv4_flow_blocked",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "peer_observed": false,
+            "drop_counter_before": 0,
+            "drop_counter_after": 1
+          },
+          {
+            "name": "enabled_tunnel_absent_existing_ipv6_flow_blocked",
+            "passed": true,
+            "destination": "2001:db8:2::80",
+            "peer_observed": false,
+            "drop_counter_before": 1,
+            "drop_counter_after": 2
+          },
+          {
+            "name": "intentional_connected_ipv4_lan_exception",
+            "passed": true,
+            "destination": "192.0.2.2",
+            "received": {
+              "token": "20891f5e0f594d51a177f7c7288449c6",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "intentional_connected_ipv4_lan_exception_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "intentional_connected_ipv6_lan_exception",
+            "passed": true,
+            "destination": "2001:db8:1::2",
+            "received": {
+              "token": "bca0c3dbc45d48aba216872c65f14109",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "intentional_connected_ipv6_lan_exception_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "adapter_atomic_replacement_applied",
+            "passed": true
+          },
+          {
+            "name": "ipv4_default_route_uses_wireguard",
+            "passed": true
+          },
+          {
+            "name": "ipv6_default_still_physical",
+            "passed": true
+          },
+          {
+            "name": "encrypted_wireguard_payload_reaches_peer",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "received": {
+              "token": "069d511efc0f410e8c7da56d75043a51",
+              "ingress": "wgpeer"
+            }
+          },
+          {
+            "name": "encrypted_wireguard_payload_reaches_peer_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "real_wireguard_handshake",
+            "passed": true
+          },
+          {
+            "name": "wireguard_transfer_counters_both_directions",
+            "passed": true,
+            "transfer_bytes": [
+              [
+                220,
+                244
+              ]
+            ]
+          },
+          {
+            "name": "ipv6_physical_fallback_blocked_while_vpn_up",
+            "passed": true,
+            "destination": "2001:db8:2::80",
+            "peer_observed": false,
+            "drop_counter_before": 0,
+            "drop_counter_after": 1
+          },
+          {
+            "name": "marked_endpoint_without_lan_exemption",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "received": {
+              "token": "4d97daaa7f44465dbcfe34baefe9a594",
+              "ingress": "wgpeer"
+            }
+          },
+          {
+            "name": "marked_endpoint_without_lan_exemption_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "unmarked_underlay_not_blanket_allowed",
+            "passed": true,
+            "destination": "192.0.2.2",
+            "peer_observed": false,
+            "drop_counter_before": 1,
+            "drop_counter_after": 2
+          },
+          {
+            "name": "tunnel_loss_restores_physical_default",
+            "passed": true
+          },
+          {
+            "name": "physical_ipv4_fallback_blocked_after_tunnel_loss",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "peer_observed": false,
+            "drop_counter_before": 0,
+            "drop_counter_after": 1
+          },
+          {
+            "name": "physical_ipv6_fallback_blocked_after_tunnel_loss",
+            "passed": true,
+            "destination": "2001:db8:2::80",
+            "peer_observed": false,
+            "drop_counter_before": 1,
+            "drop_counter_after": 2
+          },
+          {
+            "name": "lan_exception_survives_tunnel_loss",
+            "passed": true,
+            "destination": "192.0.2.2",
+            "received": {
+              "token": "153181066f9c4fd591f8d7309f3557ee",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "lan_exception_survives_tunnel_loss_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "failed_nft_transaction_preserves_installed_rules",
+            "passed": true
+          },
+          {
+            "name": "failed_transaction_remains_fail_closed",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "peer_observed": false,
+            "drop_counter_before": 2,
+            "drop_counter_after": 3
+          },
+          {
+            "name": "adapter_remove_verified",
+            "passed": true
+          },
+          {
+            "name": "firewall_removed_ipv4_positive_control",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "received": {
+              "token": "6480b5a9ba5a4631b12ab95c78d967e0",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "firewall_removed_ipv4_positive_control_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "firewall_removed_ipv6_positive_control",
+            "passed": true,
+            "destination": "2001:db8:2::80",
+            "received": {
+              "token": "4b06bdeffcbb4a02890a2faea1f0baf4",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "firewall_removed_ipv6_positive_control_peer_observed",
+            "passed": true
+          }
+        ],
+        "peer_namespace": "net:[4026534548]",
+        "status": "passed",
+        "peer_process_reaped": true
+      },
+      "process_group_gone": true,
+      "host_after_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+      "host_links_routes_unchanged": true,
+      "host_netns_unchanged": true
+    },
+    {
+      "name": "injected_failure",
+      "exit_code": 0,
+      "stderr": "",
+      "result": {
+        "namespace": "net:[4026534637]",
+        "host_namespace": "net:[4026531833]",
+        "checks": [
+          {
+            "name": "fresh_isolated_namespace",
+            "passed": true
+          },
+          {
+            "name": "peer_namespace_is_distinct",
+            "passed": true,
+            "namespace": "net:[4026533964]"
+          },
+          {
+            "name": "baseline_ipv4_default_reachable",
+            "passed": true,
+            "destination": "198.51.100.80",
+            "received": {
+              "token": "aa4cfe1d5cd54b9daedaec63adbca7b0",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "baseline_ipv4_default_reachable_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "baseline_ipv6_default_reachable",
+            "passed": true,
+            "destination": "2001:db8:2::80",
+            "received": {
+              "token": "d3346f095a244c21aef6325724433a26",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "baseline_ipv6_default_reachable_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "baseline_lan_reachable",
+            "passed": true,
+            "destination": "192.0.2.2",
+            "received": {
+              "token": "0885969fc5dd48598c68650d34d7ae4c",
+              "ingress": "wire"
+            }
+          },
+          {
+            "name": "baseline_lan_reachable_peer_observed",
+            "passed": true
+          },
+          {
+            "name": "real_render_passes_nft_check",
+            "passed": true
+          },
+          {
+            "name": "adapter_first_creation_applied",
+            "passed": true
+          }
+        ],
+        "peer_namespace": "net:[4026533964]",
+        "error": "intentional failure after live isolated firewall application",
+        "status": "expected_abort",
+        "peer_process_reaped": true
+      },
+      "process_group_gone": true,
+      "host_after_sha256": "e19fc2e8ca30e3a058b3103216a7d04706ae016f72f1774df6621eee71481ed4",
+      "host_links_routes_unchanged": true,
+      "host_netns_unchanged": true
+    }
+  ],
+  "status": "passed"
+}
