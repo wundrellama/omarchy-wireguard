@@ -37,8 +37,14 @@ cleanup() {
   fi
   if [[ $had_networkmanager_dropin == false ]]; then
     rm -f /etc/systemd/system/NetworkManager.service.d/50-omarchy-wireguard.conf
-    systemctl disable --now omarchy-wireguard.service omarchy-wireguard-firewall.service >/dev/null 2>&1 || true
-    nft delete table inet omarchy_wireguard >/dev/null 2>&1 || true
+    # Detach the cached Requires edge before stopping the firewall unit; otherwise
+    # systemd can stop NetworkManager along with its former dependency.
+    if systemctl daemon-reload >/dev/null 2>&1; then
+      systemctl disable --now omarchy-wireguard.service omarchy-wireguard-firewall.service >/dev/null 2>&1 || true
+      nft delete table inet omarchy_wireguard >/dev/null 2>&1 || true
+    else
+      echo "Rollback incomplete: could not reload systemd; firewall services retained to avoid stopping NetworkManager" >&2
+    fi
   else
     systemctl restart omarchy-wireguard.service >/dev/null 2>&1 || true
   fi

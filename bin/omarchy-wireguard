@@ -203,8 +203,29 @@ def emergency_disable():
     dns_state_path.unlink(missing_ok=True)
     subprocess.run(["nft", "delete", "table", "inet", "omarchy_wireguard"], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if subprocess.run(["nft", "list", "table", "inet", "omarchy_wireguard"], check=False,
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+    observed = subprocess.run(["nft", "-j", "list", "tables"], check=False,
+                              text=True, capture_output=True)
+    if observed.returncode != 0:
+        raise CliError("could not verify WireGuard firewall removal")
+    try:
+        value = json.loads(observed.stdout)
+        if not isinstance(value, dict) or not isinstance(value.get("nftables"), list):
+            raise ValueError
+        tables = []
+        for entry in value["nftables"]:
+            if not isinstance(entry, dict):
+                raise ValueError
+            if "table" in entry:
+                table = entry["table"]
+                if (not isinstance(table, dict) or not isinstance(table.get("family"), str)
+                        or not isinstance(table.get("name"), str)):
+                    raise ValueError
+                tables.append((table["family"], table["name"]))
+            elif not isinstance(entry.get("metainfo"), dict):
+                raise ValueError
+    except (ValueError, TypeError):
+        raise CliError("could not verify WireGuard firewall removal") from None
+    if ("inet", "omarchy_wireguard") in tables:
         raise CliError("the WireGuard firewall table is still active")
     return {"ok": True, "result": {"mode": "disabled", "emergency": True}}
 
