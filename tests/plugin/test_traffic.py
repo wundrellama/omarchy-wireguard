@@ -22,13 +22,12 @@ class TrafficTest(unittest.TestCase):
 
     def test_sample_and_missing(self):
         import tempfile
-        import os
         spec = importlib.util.spec_from_file_location('traffic', ROOT / 'plugin/traffic.py')
         assert spec and spec.loader
         m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         self.assertTrue(hasattr(m, 'sample'), 'sampling missing')
         row = 'omarchy-wireguard-home:4bd6ef4f-ca1a-4756-b9d2-55678bee6008:wireguard:owg-1234'
-        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
+        with tempfile.TemporaryDirectory() as d:
             root = Path(d); iface = root / 'owg-1234'; (iface / 'statistics').mkdir(parents=True)
             (iface/'ifindex').write_text('42\n')
             (iface/'statistics/rx_bytes').write_text('123456\n')
