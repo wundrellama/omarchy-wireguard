@@ -145,12 +145,35 @@ class SystemTests(unittest.TestCase):
         self.assertEqual(runner.calls[-1][0],
                          ["resolvectl", "default-route", "eth0", "yes"])
 
+    def test_tunnel_dns_requests_unescaped_ipv6_from_nmcli(self):
+        class NmcliEscapingRunner:
+            def __init__(self):
+                self.writes = []
+
+            def run(self, argv, **kwargs):
+                if argv[0] == 'nmcli':
+                    if 'ipv4.dns' in argv:
+                        return '192.0.2.53\n'
+                    address = '2001:db8::53'
+                    if argv[1:3] != ['--escape', 'no']:
+                        address = address.replace(':', '\\:')
+                    return address + '\n'
+                self.writes.append(argv)
+                return ''
+
+        runner = NmcliEscapingRunner()
+        self.assertEqual(HostSystem(runner).configure_tunnel_dns(
+                         '00000000-0000-0000-0000-000000000001', 'owg-test'),
+                         ('192.0.2.53', '2001:db8::53'))
+        self.assertEqual(runner.writes[0],
+                         ['resolvectl', 'dns', 'owg-test', '192.0.2.53', '2001:db8::53'])
+
     def test_configures_tunnel_dns_from_nm_profile_with_fixed_order(self):
         uuid = "00000000-0000-0000-0000-000000000001"
         runner = FakeRunner({
-            ("nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid):
+            ("nmcli", "--escape", "no", "-g", "ipv4.dns", "connection", "show", "uuid", uuid):
                 "1.1.1.1, 9.9.9.9\n",
-            ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid):
+            ("nmcli", "--escape", "no", "-g", "ipv6.dns", "connection", "show", "uuid", uuid):
                 "2606:4700:4700::1111\n",
             ("resolvectl", "dns", "owg-test", "1.1.1.1", "2606:4700:4700::1111", "9.9.9.9"): "",
             ("resolvectl", "domain", "owg-test", "~."): "",
@@ -166,8 +189,8 @@ class SystemTests(unittest.TestCase):
         uuid = "00000000-0000-0000-0000-000000000001"
         for ipv4 in ("", "1.1.1.1;evil"):
             runner = FakeRunner({
-                ("nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid): ipv4,
-                ("nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid): "",
+                ("nmcli", "--escape", "no", "-g", "ipv4.dns", "connection", "show", "uuid", uuid): ipv4,
+                ("nmcli", "--escape", "no", "-g", "ipv6.dns", "connection", "show", "uuid", uuid): "",
             })
             with self.assertRaises(SystemFailure):
                 HostSystem(runner).configure_tunnel_dns(uuid, "owg-test")

@@ -33,6 +33,26 @@ class Verification:
 DnsRestoreState = tuple[tuple[str, tuple[str, ...], bool], ...]
 
 
+def bootstrap_hostname(host: str | None) -> str | None:
+    """Return a safe full DNS hostname, never an input routing-domain expression.
+
+    resolved routes suffixes: descendants of this hostname also match. This is
+    deliberately not a QNAME firewall. Numeric endpoints need no DNS exception.
+    """
+    if host is None:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    if (not isinstance(host, str) or len(host) > 253 or '.' not in host or
+            not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label)
+                    for label in host.split('.'))):
+        raise SystemFailure("invalid endpoint bootstrap hostname")
+    return host
+
+
 class CommandRunner:
     def run(self, argv: list[str], *, stdin: str | None = None, timeout: float = 10) -> str:
         try:
@@ -206,18 +226,23 @@ class HostSystem:
             state.append((interface, domains, default_route))
         return tuple(state)
 
-    def configure_lan_dns(self, context: FirewallContext, timeout: float = 10) -> FirewallContext:
+    def configure_lan_dns(self, context: FirewallContext, timeout: float = 10,
+                          *, endpoint_host: str | None = None) -> FirewallContext:
+        hostname = bootstrap_hostname(endpoint_host)
+        domains = ("~lan",) + (("~" + hostname,) if hostname else ())
         if not context.physical_interfaces:
             return context
         each = max(0.1, timeout / (len(context.physical_interfaces) * 3))
         resolvers = set(context.lan_resolvers)
         dns_links = []
         for interface in context.physical_interfaces:
-            self.runner.run(["resolvectl", "domain", interface, "~lan"], timeout=each)
+            self.runner.run(["resolvectl", "domain", interface, *domains], timeout=each)
             self.runner.run(["resolvectl", "default-route", interface, "no"], timeout=each)
             addresses = _resolved_addresses(self.runner.run(["resolvectl", "dns", interface], timeout=each))
             resolvers.update(addresses)
             dns_links.append((interface, addresses))
+        if hostname and not any(addresses for _interface, addresses in dns_links):
+            raise SystemFailure("no physical DNS for endpoint bootstrap")
         return replace(context, lan_resolvers=tuple(sorted(resolvers)), lan_dns_links=tuple(dns_links))
 
     def configure_tunnel_dns(self, uuid: str, interface: str,
@@ -228,8 +253,8 @@ class HostSystem:
             raise SystemFailure("invalid tunnel interface")
         each = max(0.1, timeout / 5)
         outputs = [
-            self.runner.run(["nmcli", "-g", "ipv4.dns", "connection", "show", "uuid", uuid], timeout=each),
-            self.runner.run(["nmcli", "-g", "ipv6.dns", "connection", "show", "uuid", uuid], timeout=each),
+            self.runner.run(["nmcli", "--escape", "no", "-g", "ipv4.dns", "connection", "show", "uuid", uuid], timeout=each),
+            self.runner.run(["nmcli", "--escape", "no", "-g", "ipv6.dns", "connection", "show", "uuid", uuid], timeout=each),
         ]
         servers = []
         for output in outputs:

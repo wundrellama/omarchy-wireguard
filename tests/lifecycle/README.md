@@ -12,6 +12,14 @@ python -B tests/lifecycle/run.py --assert-import-inactive
 
 The first command exercises real production `Controller`, `HostSystem`, `CommandRunner`, `StateStore`, importer and nft renderer against real NetworkManager, systemd-resolved, WireGuard and nftables. No service command is mocked or redirected to a fake executable. `GuardedRunner` checks isolation then delegates to the actual production runner, including its fixed environment and `/run/omarchy-wireguard` import path.
 
+## Hostname endpoint regression
+
+Run `python -B tests/lifecycle/hostname-run.py` for the production hostname-bootstrap path. `observed-hostname-red.json` preserves the original failure: physical DNS restricted to `~lan` cannot resolve a fresh public endpoint, so NetworkManager activation never starts. `observed-hostname-green.json` records 14 passing checks with the fix; `observed-hostname-numeric.json` records 45 passing numeric-endpoint lifecycle checks.
+
+The hostname run verifies a temporary `~<full-endpoint-hostname>` route while physical default-route remains disabled, independent NetworkManager resolution after cache flushing, a genuine WireGuard handshake, removal of the temporary route after activation, tunnel DNS traffic, and baseline restoration after disconnect. Unrelated bootstrap names remain blocked. Resolved routes suffixes, so descendants of the full endpoint hostname also match; this is tested and is not an exact-QNAME firewall. Two-underlay partial failures and cleanup failures are unit-tested, not covered by this single-underlay real harness. The namespace, UID, DNS-protocol, and systemd limitations below still apply. Recorded hashes identify the tested revision; older reports do not establish coverage of subsequent edits.
+
+The parent reran both harnesses after correcting the review finding in cleanup-inspection error handling. `observed-hostname-reviewed.json` and `observed-numeric-reviewed.json` contain 14 and 45 passing checks with matching backend hashes, unchanged host fingerprints, and reaped children. Earlier hostname reports predate that correction.
+
 ## Safety boundary
 
 - Bubblewrap creates independent user, mount, PID, network, IPC and UTS namespaces with mapped root. The child verifies every namespace differs from the host before starting services and rechecks identity before tool execution. Direct host invocation is a mandatory refusal self-test.

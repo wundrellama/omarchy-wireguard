@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
+SANDBOX = 'sandbox.py'
 KINDS = ('user', 'mnt', 'pid', 'net', 'ipc', 'uts')
 
 
@@ -37,7 +38,7 @@ def main():
                                  for p in (HERE.parents[1] / 'backend/omarchy_wireguard').glob('*.py')}}
     (artifact / 'host-before.json').write_text(json.dumps(before, indent=2) + '\n')
     args = ['--host', json.dumps(host)]
-    refused = subprocess.run([sys.executable, '-B', str(HERE / 'sandbox.py'), *args],
+    refused = subprocess.run([sys.executable, '-B', str(HERE / SANDBOX), *args],
                              text=True, capture_output=True, timeout=5)
     report['direct_host_invocation_refused'] = refused.returncode != 0 and 'REFUSED' in refused.stderr
     assert report['direct_host_invocation_refused'], 'guard self-test failed'
@@ -52,7 +53,7 @@ def main():
                '--dir', '/root', '--dir', '/tmp',
                '--ro-bind', str(HERE), '/test',
                '--ro-bind', str(HERE.parents[1] / 'backend'), '/backend',
-               '--chdir', '/', '/usr/bin/python', '-B', '/test/sandbox.py', *args]
+               '--chdir', '/', '/usr/bin/python', '-B', '/test/' + SANDBOX, *args]
     if '--inject-failure' in sys.argv:
         command.append('--inject-failure')
     if '--assert-import-inactive' in sys.argv:
