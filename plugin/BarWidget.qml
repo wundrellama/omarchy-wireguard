@@ -26,7 +26,8 @@ Panel {
   readonly property bool protonCanConnect: protonInstalled && protonStatus.account !== "signed-out" && !service.busy
     && (protonStatus.state === "connected" || protonStatus.state === "disconnected")
   property string protonExpanded: ""
-  property string protonServer: ""
+  // Fixtures without protonResults fall back to the country-only filter.
+  readonly property var protonResults: service.protonResults || (service.filteredCountries || []).map(function(item) { return { kind: "country", code: item.code, name: item.name, label: item.name, choice: { kind: "country", country: item.code, name: item.name } } })
   readonly property bool statusKnown: service.status.state !== "unknown" && service.status.ok !== false
   property int selectedIndex: 0
   property bool cursorActive: false
@@ -85,6 +86,12 @@ Panel {
       // Keep the panel open for an inline VPN switch confirmation.
       if (!service.switchRequest) close()
     }
+  }
+
+  // Enter in the Proton search connects the first result, if it can connect now.
+  function connectFirstProtonResult() {
+    if (!protonCanConnect || !service.protonQuery || protonResults.length === 0) return
+    service.connectProton(protonResults[0].choice)
   }
 
   function scrollSelectedIntoView() {
@@ -376,8 +383,10 @@ Panel {
             Button { visible: service.status.installed && service.status.state === "failed"; focusable: true; text: "Retry"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.retry() }
             Button { visible: !root.statusKnown && service.disconnectRecovery === true; enabled: !service.busy; focusable: true; text: "Disconnect"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.disconnect() }
             Button { visible: !root.statusKnown; focusable: true; text: "Refresh status"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.refresh() }
-            Button { visible: service.status.installed; enabled: !service.busy; focusable: true; text: "Copy diagnostics"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.copyDiagnostics() }
           }
+
+          // One primary action: reconnect the last choice, or disconnect the active VPN.
+          Button { visible: !!service.quickAction && service.quickAction.mode !== "hidden"; enabled: !!service.quickAction && service.quickAction.enabled === true; width: parent.width; focusable: true; bordered: true; text: service.quickAction ? service.quickAction.label : ""; foreground: service.quickAction && service.quickAction.mode === "disconnect" ? root.warning : root.success; fontFamily: root.fontFamily; onClicked: service.quickConnect() }
 
           PanelSeparator { visible: service.status.installed; foreground: root.foreground }
 
@@ -490,34 +499,22 @@ Panel {
               width: parent.width
               spacing: Style.space(6)
               TextField {
-                id: protonServerField
+                id: protonSearch
                 Layout.fillWidth: true
                 foreground: root.foreground
-                placeholderText: "Server, for example IT#23 or CH-US#1"
-                maximumLength: 16
-                text: root.protonServer
-                onTextEdited: root.protonServer = text.trim().toUpperCase()
-                onAccepted: if (root.protonCanConnect && Proton.validServerName(root.protonServer)) service.connectProton({ kind: "server", server: root.protonServer })
-              }
-              Button { enabled: root.protonCanConnect && Proton.validServerName(root.protonServer); focusable: true; text: "Connect"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.connectProton({ kind: "server", server: root.protonServer }) }
-            }
-            RowLayout {
-              visible: root.protonInstalled && root.protonStatus.account !== "signed-out"
-              width: parent.width
-              spacing: Style.space(6)
-              TextField {
-                Layout.fillWidth: true
-                foreground: root.foreground
-                placeholderText: "Search Proton countries"
+                placeholderText: "Search country, city or server (US-CA#3, Tor)"
+                maximumLength: 64
                 text: service.protonQuery || ""
                 onTextChanged: service.protonQuery = text
+                onAccepted: root.connectFirstProtonResult()
+                Keys.onPressed: function(event) { if (event.key === Qt.Key_Escape) { root.close(); event.accepted = true } }
               }
               Button { enabled: !!service.loadProtonCountries; focusable: true; text: "Refresh"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.loadProtonCountries(true) }
             }
             Text {
               visible: text !== ""
               width: parent.width
-              text: service.protonCountriesError || service.protonCitiesError || ""
+              text: service.protonCountriesError || service.protonCitiesError || service.protonServersError || ""
               textFormat: Text.PlainText
               color: root.errorColor
               font.family: root.fontFamily
@@ -530,13 +527,17 @@ Panel {
               width: parent.width
               spacing: Style.space(4)
               Repeater {
-                model: service.filteredCountries || []
-                ProtonCountryRow {
+                model: root.protonResults
+                Loader {
+                  id: resultLoader
                   required property var modelData
                   width: protonCountryColumn.width
-                  country: modelData
+                  sourceComponent: modelData.kind === "country" ? countryResult : placeResult
+                  Component { id: countryResult; ProtonCountryRow { country: resultLoader.modelData } }
+                  Component { id: placeResult; ProtonResultRow { result: resultLoader.modelData } }
                 }
               }
+              Text { visible: service.protonQuery && root.protonResults.length === 0; width: parent.width; text: "No matching Proton countries, cities or servers"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; horizontalAlignment: Text.AlignHCenter }
             }
           }
 
@@ -547,13 +548,18 @@ Panel {
             spacing: Style.space(6)
             PanelSeparator { width: parent.width; foreground: root.foreground }
             PanelSectionHeader { text: "BACKEND MAINTENANCE"; foreground: root.foreground; fontFamily: root.fontFamily }
-            Button {
-              enabled: root.statusKnown && !service.busy
-              focusable: true
-              text: "Uninstall backend"
-              foreground: root.errorColor
-              fontFamily: root.fontFamily
-              onClicked: service.uninstallBackend()
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+              Button { enabled: !service.busy; focusable: true; text: "Copy diagnostics"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.copyDiagnostics() }
+              Button {
+                enabled: root.statusKnown && !service.busy
+                focusable: true
+                text: "Uninstall backend"
+                foreground: root.errorColor
+                fontFamily: root.fontFamily
+                onClicked: service.uninstallBackend()
+              }
             }
           }
         }
@@ -657,6 +663,39 @@ Panel {
           onClicked: service.connectProton({ kind: "city", country: countryRow.code, city: modelData.name })
         }
       }
+    }
+  }
+
+  component ProtonResultRow: CursorSurface {
+    id: resultRow
+    property var result: null
+    enabled: root.protonCanConnect
+    foreground: root.foreground
+    implicitHeight: resultLabels.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: if (resultRow.result) service.connectProton(resultRow.result.choice)
+    }
+
+    RowLayout {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(9)
+      anchors.rightMargin: Style.space(9)
+      spacing: Style.space(9)
+      Text { text: Model.countryFlag(resultRow.result ? resultRow.result.country : ""); color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; Layout.preferredWidth: Style.space(28) }
+      ColumnLayout {
+        id: resultLabels
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+        Text { Layout.fillWidth: true; text: resultRow.result ? resultRow.result.label : ""; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
+        Text { Layout.fillWidth: true; text: resultRow.result ? (resultRow.result.kind === "city" ? "City · " : "Server · ") + (resultRow.result.detail || "") : ""; textFormat: Text.PlainText; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+      }
+      Text { text: "Connect"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
     }
   }
 

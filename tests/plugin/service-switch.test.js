@@ -16,10 +16,11 @@ function service() {
     sawFirstStatus:false, previousState:'', previousPaused:false, failureNotificationShown:false,
     handshakeFailureConfirmationPending:false, importPaths:[], currentUser:'tester', installScriptPath:'/not/executed',
     switchRequest:null, switchTarget:null, switchPhase:'', switchStartedAt:0, wgReleasedAfter:0, protonReleasedAfter:0,
+    pendingConnection:null, lastConnection:null, lastConnectionHelper:'/not/executed',
     Qt:{callLater(f){queue.push(f)}},
     Quickshell:{execDetached(){throw Error('inactive detached process')}},
     delayedRefresh:{restart(){}}, handshakeFailureNotificationDelay:{restart(){},stop(){}}, actionFinished(){} }
-  for (const name of ['statusProcess','listProcess','actionProcess','pickerProcess','installProcess','diagnosticsProcess','clipboardProcess']) s[name]={running:false}
+  for (const name of ['statusProcess','listProcess','actionProcess','pickerProcess','installProcess','diagnosticsProcess','clipboardProcess','lastConnectionReader','lastConnectionWriter']) s[name]={running:false}
   s.protonService = { status:{state:'disconnected',installed:true}, busy:false, nm:{ok:true,at:1,match:'none'}, cli:{ok:true,at:1,state:'disconnected'},
     connect(choice){ if (this.busy) return false; log.push(['proton', ...Proton.connectArgs(choice)]); this.busy=true; return true },
     disconnect(){ if (this.busy) return false; log.push(['proton','disconnect']); this.busy=true; return true },

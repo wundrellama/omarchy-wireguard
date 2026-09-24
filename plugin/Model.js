@@ -150,7 +150,7 @@ function parseCatalog(raw) {
         profileIds: [text(item.id)] }
     }).filter(function(item) { return item.id !== "" })
     named.sort(function(a, b) { return a.label.localeCompare(b.label) })
-    return { ok: true, locations: named }
+    return { ok: true, locations: named, mru: mruList(parsed.mru) }
   }
   var cities = Array.isArray(parsed.cities) ? parsed.cities : []
   var mru = Array.isArray(parsed.mru) ? parsed.mru : []
@@ -177,7 +177,12 @@ function parseCatalog(raw) {
     if (a.mruRank !== b.mruRank) return a.mruRank - b.mruRank
     return (a.country + "\n" + a.city).localeCompare(b.country + "\n" + b.city)
   })
-  return { ok: true, locations: locations }
+  return { ok: true, locations: locations, mru: mruList(parsed.mru) }
+}
+
+// Backend most-recently-used profile IDs, newest first; strings only.
+function mruList(value) {
+  return (Array.isArray(value) ? value : []).filter(function(item) { return typeof item === "string" && item !== "" }).slice(0, 20)
 }
 
 function mergeStatusCatalog(status, catalog) {

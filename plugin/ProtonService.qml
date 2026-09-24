@@ -26,6 +26,10 @@ Item {
   property string countriesError: ""
   property var cities: ({})
   property string citiesError: ""
+  // Compact index from proton_servers.py; read-only, loaded once per session.
+  property var servers: []
+  property string serversError: ""
+  readonly property string serversHelper: decodeURIComponent(String(Qt.resolvedUrl("proton_servers.py")).replace(/^file:\/\//, ""))
   readonly property bool busy: actionProcess.running || configProcess.running
   readonly property var status: Proton.buildStatus({ installed: installed, action: action, nm: nm, cli: cli,
     now: clock, phase: phase, error: error, message: message, account: account })
@@ -49,7 +53,7 @@ Item {
   // exited. Abandoned (revision -1) commands are ignored.
   function checkLaunches() {
     var failed = "Could not run protonvpn"
-    var processes = [probeProcess, nmProcess, statusProcess, infoProcess, actionProcess, configProcess, countriesProcess, citiesProcess]
+    var processes = [probeProcess, nmProcess, statusProcess, infoProcess, actionProcess, configProcess, countriesProcess, citiesProcess, serversProcess]
     for (var i = 0; i < processes.length; i++) {
       var process = processes[i]
       if (process.running || process.handledExit || process.revision === -1) continue
@@ -66,6 +70,7 @@ Item {
       else if (process === configProcess) Qt.callLater(function() { root.killSwitchRead("") })
       else if (process === countriesProcess) countriesError = failed
       else if (process === citiesProcess) citiesError = failed
+      else if (process === serversProcess) serversError = "Could not read the Proton server list"
     }
   }
 
@@ -132,6 +137,13 @@ Item {
     start(citiesProcess, ["protonvpn", "cities", "list", code], 30000)
   }
 
+  function loadServers(force) {
+    if (!active || installed !== true || serversProcess.running) return
+    if (servers.length > 0 && force !== true) return
+    serversError = ""
+    start(serversProcess, ["python3", "-B", serversHelper], 20000)
+  }
+
   function finishAction(name, success, text) {
     action = ""
     message = ""
@@ -147,7 +159,7 @@ Item {
 
   function expire() {
     clock = Date.now()
-    var processes = [probeProcess, nmProcess, statusProcess, infoProcess, actionProcess, configProcess, countriesProcess, citiesProcess]
+    var processes = [probeProcess, nmProcess, statusProcess, infoProcess, actionProcess, configProcess, countriesProcess, citiesProcess, serversProcess]
     for (var i = 0; i < processes.length; i++) {
       var process = processes[i]
       if (!process.running || clock - process.startedAt <= process.timeoutMs) continue
@@ -167,10 +179,10 @@ Item {
   }
 
   Component.onCompleted: refresh()
-  onPanelOpenChanged: if (panelOpen) { refresh(); refreshAccount(); loadCountries(false) }
-  onInstalledChanged: if (installed === true) { refresh(); refreshAccount(); if (panelOpen) loadCountries(false) }
+  onPanelOpenChanged: if (panelOpen) { refresh(); refreshAccount(); loadCountries(false); loadServers(false) }
+  onInstalledChanged: if (installed === true) { refresh(); refreshAccount(); if (panelOpen) { loadCountries(false); loadServers(false) } }
   onActiveChanged: if (!active) {
-    for (var i = 0, list = [probeProcess, nmProcess, statusProcess, infoProcess, actionProcess, configProcess, countriesProcess, citiesProcess]; i < list.length; i++) {
+    for (var i = 0, list = [probeProcess, nmProcess, statusProcess, infoProcess, actionProcess, configProcess, countriesProcess, citiesProcess, serversProcess]; i < list.length; i++) {
       list[i].revision = -1
       list[i].running = false
     }
@@ -296,6 +308,17 @@ Item {
       var list = exitCode === 0 ? Proton.parseCities(citiesOut.text) : []
       if (list.length > 0) root.setCities(code, list)
       else root.citiesError = Proton.errorMessage(citiesErr.text, "Could not load cities")
+    }
+  }
+
+  Command {
+    id: serversProcess
+    stdout: StdioCollector { id: serversOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (!root.active || revision === -1) return
+      var parsed = exitCode === 0 ? Proton.parseServerIndex(serversOut.text) : { ok: false, servers: [] }
+      if (parsed.ok) root.servers = parsed.servers
+      else root.serversError = "Proton server list unavailable; search shows countries and loaded cities only"
     }
   }
 }

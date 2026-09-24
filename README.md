@@ -27,7 +27,9 @@ The panel supports these actions:
 - Connect a selected profile or disconnect the current profile.
 - Import individual files, a directory, or a ZIP archive.
 - Review display labels before an ambiguous import.
-- Retry a failed connection or copy diagnostics.
+- Retry a failed connection.
+- Use one button at the top to connect the last connection again (WireGuard or Proton VPN), or to disconnect the active VPN.
+- Copy diagnostics from **BACKEND MAINTENANCE** at the bottom of the panel.
 
 Imports add profiles without replacing existing profiles. The file chooser returns to the panel for label review when required. The panel does not offer timed pause.
 
@@ -36,7 +38,8 @@ Imports add profiles without replacing existing profiles. The file chooser retur
 The panel has a Proton VPN section. It uses the official `protonvpn` command in your user session. The plugin does not read or store your Proton password.
 
 - Sign in: the panel opens Proton's own sign-in prompt in a terminal.
-- Connect: Fastest, Random, Fastest P2P, Secure Core, Tor, a country, a city, or a server name such as `IT#23`.
+- Connect: Fastest, Random, Fastest P2P, Secure Core, Tor, a country, a city, or a server.
+- Search: one field finds countries, cities, and servers (for example `US-CA#3`, `los angeles`, or `tor`) while you type.
 - Disconnect, and show the server, location, load, protocol, and traffic.
 
 To change from one VPN to the other, select the new connection and confirm the switch in the panel. The panel disconnects the active VPN first. During the switch, traffic uses your regular connection for a few seconds, and possibly up to about a minute. If the Proton kill switch is not `off`, the panel does not switch to WireGuard. See [Proton VPN](docs/PROTON.md).

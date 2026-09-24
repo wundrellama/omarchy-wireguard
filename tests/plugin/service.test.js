@@ -7,7 +7,7 @@ const Model = {}; vm.createContext(Model); vm.runInContext(fs.readFileSync(path.
 const Proton = {}; vm.createContext(Proton); vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugin/Proton.js'),'utf8'), Proton)
 // Exercise production function bodies; QML runtime imports are tested separately.
 function service() {
-  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null,
+  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null, pendingConnection:null, lastConnection:null,
     Qt:{callLater(){}}, protonService:{status:{state:'absent',installed:false}}, status:Model.unknownStatus(), catalog:{locations:[]},
     disconnectRecovery:false, lastStatusAt:0, closedRefreshIntervalSec:30, busy:false, panelOpen:false,
     lastError:'', actionError:'', pendingAction:'', actionMessage:'', refreshing:false,
@@ -15,7 +15,7 @@ function service() {
     handshakeFailureConfirmationPending:false, importPaths:[], currentUser:'tester', installScriptPath:'/not/executed',
     Quickshell:{execDetached(){throw Error('inactive detached process')}},
     delayedRefresh:{restart(){}}, handshakeFailureNotificationDelay:{restart(){},stop(){}} }
-  for (const name of ['statusProcess','listProcess','actionProcess','pickerProcess','installProcess','diagnosticsProcess','clipboardProcess']) s[name]={running:false}
+  for (const name of ['statusProcess','listProcess','actionProcess','pickerProcess','installProcess','diagnosticsProcess','clipboardProcess','lastConnectionReader','lastConnectionWriter']) s[name]={running:false}
   const re = /^  function (\w+)\(([^)]*)\) \{/gm; let m
   while ((m=re.exec(source))) {
     let start=re.lastIndex, depth=1, end=start

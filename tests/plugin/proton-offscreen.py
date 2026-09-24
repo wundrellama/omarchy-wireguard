@@ -83,6 +83,11 @@ SCENARIOS = {
       if (step === 1) service.connectLocation({ id: "home", kind: "profile", label: "Home" })
       if (step === 2) service.confirmSwitch()
     """, "off", False, True),
+    # Nothing connects: the index loads, the search filters, and with no history
+    # and no MRU the quick button offers Proton Fastest.
+    "search-and-quick": ("""
+      if (step === 2) service.protonQuery = "los angeles"
+    """, "off", False, False),
     # protonvpn is on PATH but cannot be launched (missing interpreter).
     "proton-launch-fails": ("""
       if (step === 1) service.connectProton({ kind: "country", country: "CH" })
@@ -95,10 +100,18 @@ def run(name):
     actions, kill_switch, wg_enabled, proton_connected = SCENARIOS[name]
     with tempfile.TemporaryDirectory(prefix="wg-proton-", dir=os.environ.get("TMPDIR")) as directory:
         stage = Path(directory)
-        for item in ("Service.qml", "Model.js", "Proton.js", "ProtonService.qml", "TrafficService.qml", "Traffic.js", "traffic.py"):
+        for item in ("Service.qml", "Model.js", "Proton.js", "ProtonService.qml", "TrafficService.qml", "Traffic.js", "traffic.py",
+                     "proton_servers.py", "last_connection.py"):
             shutil.copy2(ROOT / "plugin" / item, stage / item)
         state = stage / "state"
         state.mkdir()
+        # Isolated XDG directories: a synthetic server list, and no real history.
+        cache = stage / "cache" / "Proton" / "VPN"
+        cache.mkdir(parents=True)
+        (cache / "serverlist.json").write_text(json.dumps({"MaxTier": 2, "LogicalServers": [
+            {"Name": "CH#12", "ExitCountry": "CH", "City": "Zurich", "Features": 4, "Status": 1, "Load": 34, "Tier": 2},
+            {"Name": "US-CA#3", "ExitCountry": "US", "City": "Los Angeles", "Features": 0, "Status": 1, "Load": 20, "Tier": 2},
+            {"Name": "US-CA#9", "ExitCountry": "US", "City": "Los Angeles", "Features": 0, "Status": 0, "Load": 5, "Tier": 2}]}))
         if wg_enabled:
             (state / "wg-enabled").touch()
         if proton_connected:
@@ -127,7 +140,9 @@ ShellRoot {
           wg: service.status.state, proton: service.protonStatus.state, server: service.protonStatus.server,
           account: service.protonStatus.account, shield: service.shield.state, vpn: service.shield.vpn,
           phase: service.switchPhase, request: service.switchRequest, error: service.actionError,
-          countries: service.proton.countries.length, busy: service.busy }))
+          countries: service.proton.countries.length, busy: service.busy,
+          servers: service.proton.servers.length, search: service.protonResults.map(function(r) { return r.kind + ":" + r.label }),
+          quick: service.quickAction, last: service.lastConnection }))
         Qt.quit()
       }
     }
@@ -135,7 +150,8 @@ ShellRoot {
 }
 ''' % actions)
         env = dict(os.environ, PATH=str(commands) + ":/usr/bin", QT_QPA_PLATFORM="offscreen",
-                   FAKE_STATE=str(state), FAKE_KILL_SWITCH=kill_switch)
+                   FAKE_STATE=str(state), FAKE_KILL_SWITCH=kill_switch,
+                   XDG_CACHE_HOME=str(stage / "cache"), XDG_STATE_HOME=str(stage / "xdg-state"))
         result = subprocess.run(["/usr/bin/qs", "--no-color", "-p", str(stage / "shell.qml")],
                                 capture_output=True, text=True, env=env, timeout=40)
         output = result.stdout + result.stderr
@@ -143,6 +159,9 @@ ShellRoot {
         assert result.returncode == 0 and len(reports) == 1, output
         assert "ReferenceError" not in output and "TypeError" not in output, output
         log = (state / "log").read_text().splitlines() if (state / "log").exists() else []
+        saved = stage / "xdg-state" / "wundrellama-wireguard" / "last-connection.json"
+        reports[0]["saved"] = json.loads(saved.read_text()) if saved.exists() else None
+        reports[0]["savedMode"] = oct(saved.stat().st_mode & 0o777) if saved.exists() else None
         return reports[0], log
 
 
@@ -157,6 +176,10 @@ assert "omarchy-wireguard status" in log[disconnect_at + 1:connect_at], log
 assert report["wg"] == "disabled" and report["proton"] == "connected" and report["server"] == "CH#12", report
 assert report["shield"] == "connected" and report["vpn"] == "Proton" and report["phase"] == "", report
 assert report["account"] == "signed-in" and report["countries"] == 1 and not report["error"], report
+# The confirmed switch recorded the Proton choice; the button now disconnects Proton.
+assert report["saved"] == {"version": 1, "kind": "country", "value": "CH", "label": "CH"}, report
+assert report["savedMode"] == "0o600" and report["last"]["value"] == "CH", report
+assert report["quick"]["mode"] == "disconnect" and report["quick"]["label"] == "Disconnect Proton VPN", report
 print("WireGuard -> Proton switch ordering passed")
 
 report, log = run("proton-to-wg-refused")
@@ -177,6 +200,8 @@ assert "protonvpn status" in between, log
 assert log.index("protonvpn config list") < log.index("protonvpn disconnect"), log
 assert report["proton"] == "disconnected" and report["wg"] == "connected" and report["vpn"] == "WireGuard", report
 assert report["phase"] == "" and not report["error"], report
+assert report["saved"] == {"version": 1, "kind": "wireguard", "value": "home", "label": "Home"}, report
+assert report["quick"]["label"] == "Disconnect Home", report
 print("Proton -> WireGuard switch ordering passed")
 
 report, log = run("proton-launch-fails")
@@ -185,4 +210,14 @@ assert [line for line in log if line.startswith("protonvpn")] == [], log
 assert report["phase"] == "" and not report["busy"], report
 assert report["proton"] != "connected" and report["shield"] != "connected", report
 assert "Could not run protonvpn" in report["error"], report
+assert report["saved"] is None, report
 print("Proton launch failure ends the switch passed")
+
+report, log = run("search-and-quick")
+print(json.dumps(report))
+assert [line for line in log if line.split()[1] in ("connect", "disconnect")] == [], log
+assert report["servers"] == 2, report
+assert report["search"] == ["city:Los Angeles", "server:US-CA#3"], report
+assert report["quick"]["label"] == "Connect: Proton Fastest" and report["quick"]["enabled"] is True, report
+assert report["saved"] is None, report
+print("Server index, unified search and quick-connect fallback passed")

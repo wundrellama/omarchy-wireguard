@@ -11,6 +11,8 @@ node tests/plugin/proton.test.js
 node tests/plugin/service-switch.test.js
 node tests/plugin/proton-panel.test.js
 python3 -B tests/plugin/proton-offscreen.py
+node tests/plugin/quick-connect.test.js
+python3 -B -m unittest tests/plugin/test_proton_servers.py tests/plugin/test_last_connection.py
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/plugin/tst_model.qml
 omarchy plugin validate .
 ```

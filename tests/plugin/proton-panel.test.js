@@ -62,8 +62,9 @@ assert.match(panel, /onClicked: service.disconnectProton\(\)/)
 for (const kind of ['fastest','random','p2p','securecore','tor']) assert.match(panel, new RegExp('kind: "' + kind + '"'))
 assert.match(panel, /kind: "country", country: /)
 assert.match(panel, /kind: "city", country: /)
-assert.match(panel, /kind: "server", server: /)
-assert.match(panel, /Proton.validServerName\(/)
+// Server and city results come from Proton.searchProton, which validates every name.
+assert.match(panel, /service.connectProton\(resultRow.result.choice\)/)
+assert.match(panel, /onAccepted: root.connectFirstProtonResult\(\)/)
 assert.match(panel, /service.loadProtonCountries\(/)
 assert.match(panel, /service.loadProtonCities\(/)
 

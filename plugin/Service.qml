@@ -25,6 +25,16 @@ Item {
   readonly property var shield: Proton.shield(status, protonService.status, disconnectRecovery, wireGuardAbsent())
   property string protonQuery: ""
   readonly property var filteredCountries: Proton.filterCountries(protonService.countries, protonQuery)
+  // One live Proton search: countries, cities and servers from the cached index.
+  readonly property var protonResults: Proton.searchProton(protonQuery, protonService.countries, protonService.cities, protonService.servers, 30)
+  readonly property string protonServersError: protonService.serversError
+  // Last connection: a validated choice descriptor read from and written to
+  // last_connection.py. pendingConnection is recorded only on success.
+  readonly property string lastConnectionHelper: decodeURIComponent(String(Qt.resolvedUrl("last_connection.py")).replace(/^file:\/\//, ""))
+  property var lastConnection: null
+  property var pendingConnection: null
+  property var queuedConnection: null
+  readonly property var quickAction: Proton.quickAction({ wg: status, recovery: disconnectRecovery, wgAbsent: wireGuardAbsent(), proton: protonService.status, switching: switchPhase !== "" || !!switchRequest, busy: busy, protonBusy: protonService.busy, record: lastConnection, locations: status.locations || [], mru: catalog.mru || [], countries: protonService.countries })
   readonly property var protonCities: protonService.cities
   readonly property string protonCountriesError: protonService.countriesError
   readonly property string protonCitiesError: protonService.citiesError
@@ -132,6 +142,72 @@ Item {
       return
     }
     runAction("Connecting", Model.connectArgs(location))
+    if (actionProcess.running) pendingConnection = Proton.lastFromLocation(location)
+  }
+
+  // The quick button: reconnect the last choice or disconnect the active VPN
+  // through the normal paths. Disabled and hidden states do nothing.
+  function quickConnect() {
+    var action = quickAction
+    if (!active || busy || !action || !action.enabled) return
+    if (action.mode === "disconnect" && action.vpn === "wireguard") disconnect()
+    else if (action.mode === "disconnect" && action.vpn === "proton") disconnectProton()
+    else if (action.mode === "connect" && action.vpn === "wireguard") connectLocation(action.target.location)
+    else if (action.mode === "connect" && action.vpn === "proton") connectProton(action.target.choice)
+  }
+
+  function loadLastConnection() {
+    if (!active || lastConnectionReader.running) return
+    lastConnectionReader.startedAt = Date.now()
+    lastConnectionReader.command = ["python3", "-B", lastConnectionHelper, "read"]
+    lastConnectionReader.running = true
+  }
+
+  // The reader is bounded like the other commands; a hung read loses history only.
+  function expireLastConnection() {
+    if (lastConnectionReader.running && Date.now() - lastConnectionReader.startedAt > 10000)
+      lastConnectionReader.running = false
+  }
+
+  function applyLastConnection(raw) { lastConnection = Proton.parseLastConnection(raw) }
+
+  // One writer at a time. A record that arrives during a write is kept (the
+  // latest wins) and written when the current write exits.
+  function recordConnection(record) {
+    pendingConnection = null
+    if (!active || !record) return
+    lastConnection = record
+    if (lastConnectionWriter.running) { queuedConnection = record; return }
+    lastConnectionWriter.command = ["python3", "-B", lastConnectionHelper, "write", JSON.stringify(record)]
+    lastConnectionWriter.running = true
+  }
+
+  function lastConnectionWritten() {
+    var next = queuedConnection
+    queuedConnection = null
+    if (!active || !next || lastConnectionWriter.running) return
+    lastConnectionWriter.command = ["python3", "-B", lastConnectionHelper, "write", JSON.stringify(next)]
+    lastConnectionWriter.running = true
+  }
+
+  // WireGuard is recorded when a status poll shows the chosen location connected.
+  // A poll that shows the attempt ended (disabled, failed, ...) clears it, so
+  // a later connection made outside the panel is never recorded.
+  function checkPendingConnection() {
+    var pending = pendingConnection
+    if (!pending || pending.kind !== "wireguard") return
+    if (status.state !== "connected") {
+      if (status.state !== "connecting" && status.state !== "unknown") pendingConnection = null
+      return
+    }
+    var locations = status.locations || []
+    for (var i = 0; i < locations.length; i++) {
+      if (locations[i].id !== pending.value) continue
+      if (locations[i].current === true) recordConnection(pending)
+      else pendingConnection = null
+      return
+    }
+    pendingConnection = null
   }
 
   // The backend CLI reports this when its socket is absent; no WireGuard intent can exist.
@@ -143,6 +219,7 @@ Item {
     if (!active || busy) return
     if (!Proton.connectArgs(choice)) { actionError = "Invalid Proton VPN selection"; return }
     if (Proton.wireGuardActive(status, disconnectRecovery)) {
+      pendingConnection = null
       switchRequest = { target: "proton", choice: choice, label: Proton.choiceLabel(choice) }
       return
     }
@@ -157,6 +234,7 @@ Item {
     }
     actionError = ""
     if (!protonService.connect(choice)) actionError = "Proton VPN is busy or unavailable"
+    else pendingConnection = Proton.lastFromChoice(choice)
   }
 
   function disconnectProton() {
@@ -166,12 +244,13 @@ Item {
   }
 
   function protonSignIn() { if (active) protonService.signIn() }
-  function loadProtonCountries(force) { if (active) protonService.loadCountries(force === true) }
+  function loadProtonCountries(force) { if (active) { protonService.loadCountries(force === true); protonService.loadServers(force === true) } }
   function loadProtonCities(code) { if (active) protonService.loadCities(code) }
 
   function cancelSwitch() { switchRequest = null }
 
   function abortSwitch(message) {
+    pendingConnection = null
     switchPhase = ""
     switchTarget = null
     actionMessage = ""
@@ -201,6 +280,7 @@ Item {
   }
 
   function wireGuardActionDone(success) {
+    if (!success && pendingConnection && pendingConnection.kind === "wireguard") pendingConnection = null
     if (switchPhase !== "wg-disconnect") return
     if (!success) {
       abortSwitch("WireGuard disconnect failed; Proton VPN was not started: " + (actionError || "unknown error"))
@@ -222,6 +302,10 @@ Item {
   }
 
   function protonActionDone(name, success, message) {
+    if (name === "connect" && pendingConnection && pendingConnection.kind !== "wireguard") {
+      if (success && (switchPhase === "" || switchPhase === "proton-connect")) recordConnection(pendingConnection)
+      else pendingConnection = null
+    }
     if (switchPhase === "proton-connect" && name === "connect") {
       switchPhase = ""
       switchTarget = null
@@ -254,12 +338,14 @@ Item {
       switchPhase = "proton-connect"
       actionMessage = "Connecting Proton VPN"
       if (!protonService.connect(switchTarget.choice)) abortSwitch("Could not start Proton VPN; WireGuard is disconnected")
+      else pendingConnection = Proton.lastFromChoice(switchTarget.choice)
     } else if (switchPhase === "proton-wait" && protonReleased()) {
       var location = switchTarget.location
       switchPhase = ""
       switchTarget = null
       runAction("Connecting", Model.connectArgs(location))
       if (!actionProcess.running) actionError = "Could not start WireGuard; Proton VPN is disconnected"
+      else pendingConnection = Proton.lastFromLocation(location)
     }
   }
 
@@ -373,6 +459,7 @@ Item {
     disconnectRecovery = merged.enabled === true || merged.state === "connected"
     status = merged
     lastError = ""
+    checkPendingConnection()
   }
 
   function markCliUnavailable(message) {
@@ -449,7 +536,7 @@ Item {
     applyStatus(raw)
   }
 
-  Component.onCompleted: refresh()
+  Component.onCompleted: { refresh(); loadLastConnection() }
 
   Timer {
     interval: (root.panelOpen || root.transitioning || root.switchPhase !== "" ? 1500 : root.closedRefreshIntervalSec * 1000)
@@ -462,7 +549,7 @@ Item {
     interval: 1000
     repeat: true
     running: root.active
-    onTriggered: { root.expireStatus(); root.expireAction(); root.checkSwitchDeadline() }
+    onTriggered: { root.expireStatus(); root.expireAction(); root.expireLastConnection(); root.checkSwitchDeadline() }
   }
 
   Connections {
@@ -480,6 +567,7 @@ Item {
     diagnosticsProcess.running = false
     clipboardProcess.running = false
     installProcess.running = false
+    lastConnectionReader.running = false
     delayedRefresh.stop()
     handshakeFailureNotificationDelay.stop()
     switchRequest = null
@@ -579,6 +667,20 @@ Item {
       root.wireGuardActionDone(exitCode === 0)
       delayedRefresh.restart()
     }
+  }
+
+  Process {
+    id: lastConnectionReader
+    property double startedAt: 0
+    stdout: StdioCollector { id: lastConnectionOut; waitForEnd: true }
+    onExited: function(exitCode) { if (root.active) root.applyLastConnection(exitCode === 0 ? lastConnectionOut.text : "") }
+  }
+
+  // A failed write only loses history. Quickshell emits exited before
+  // runningChanged, so the queued write starts on the next turn.
+  Process {
+    id: lastConnectionWriter
+    onExited: Qt.callLater(root.lastConnectionWritten)
   }
 
   Process {
