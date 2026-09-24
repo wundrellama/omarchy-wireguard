@@ -74,9 +74,12 @@ assert.ok(glyph, 'status indicator uses a shield glyph')
 const colorBody = panel.match(/readonly property color stateColor: \{([\s\S]*?)\n  \}/)[1]
 for (const [state, color] of [['connected','green'],['connecting','yellow'],['failed','red'],['enabled-unverified','red'],['disabled','muted'],['unknown','muted'],['paused','muted']]) {
   const service = {status:{state}}
-  assert.equal(new Function('service', 'return '+glyph[1])(service),
+  // The shield follows the combined VPN state; without Proton it is the WireGuard state.
+  const shieldInfo = new Function('service', 'return '+panel.match(/readonly property var shieldInfo: ([^\n]+)/)[1])(service)
+  const shieldState = new Function('root', 'return '+panel.match(/readonly property string shieldState: ([^\n]+)/)[1])({shieldInfo})
+  assert.equal(new Function('root', 'return '+glyph[1])({shieldState}),
     String.fromCodePoint(state === 'connected' ? 0xF0565 : 0xF0498))
-  assert.equal(new Function('service','success','warning','errorColor','dim',colorBody)(service,'green','yellow','red','muted'),color)
+  assert.equal(new Function('root','success','warning','errorColor','dim',colorBody)({shieldState},'green','yellow','red','muted'),color)
 }
 assert.match(panel, /text: root.stateGlyph\s+foreground: root.stateColor/)
 assert.match(panel, /text: root.stateGlyph\s+color: root.stateColor/)

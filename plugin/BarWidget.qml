@@ -7,6 +7,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 import "Traffic.js" as Traffic
+import "Proton.js" as Proton
 
 Panel {
   id: root
@@ -16,7 +17,16 @@ Panel {
 
   property var serviceOverride: null
   readonly property var service: serviceOverride || liveService
-  readonly property var traffic: service.status.state === "connected" ? (service.traffic || null) : null
+  // Combined VPN shield; fixtures without Proton fall back to the WireGuard status.
+  readonly property var shieldInfo: service.shield || ({ state: service.status.state, vpn: service.status.state === "connected" ? "WireGuard" : "" })
+  readonly property string shieldState: String(root.shieldInfo.state || "unknown")
+  readonly property var traffic: root.shieldState === "connected" ? (service.traffic || null) : null
+  readonly property var protonStatus: service.protonStatus || null
+  readonly property bool protonInstalled: !!protonStatus && protonStatus.installed === true
+  readonly property bool protonCanConnect: protonInstalled && protonStatus.account !== "signed-out" && !service.busy
+    && (protonStatus.state === "connected" || protonStatus.state === "disconnected")
+  property string protonExpanded: ""
+  property string protonServer: ""
   readonly property bool statusKnown: service.status.state !== "unknown" && service.status.ok !== false
   property int selectedIndex: 0
   property bool cursorActive: false
@@ -35,12 +45,19 @@ Panel {
   readonly property var locations: service.filteredLocations
 
   // Material shield / shield-check, matching the omarchy-vpn addon.
-  readonly property string stateGlyph: String.fromCodePoint(service.status.state === "connected" ? 0xF0565 : 0xF0498)
+  readonly property string stateGlyph: String.fromCodePoint(root.shieldState === "connected" ? 0xF0565 : 0xF0498)
   readonly property color stateColor: {
-    if (service.status.state === "connected") return success
-    if (service.status.state === "connecting") return warning
-    if (service.status.state === "failed" || service.status.state === "enabled-unverified") return errorColor
+    if (root.shieldState === "connected") return success
+    if (root.shieldState === "connecting") return warning
+    if (root.shieldState === "failed" || root.shieldState === "enabled-unverified" || root.shieldState === "conflict") return errorColor
     return dim
+  }
+  readonly property string tooltipText: {
+    var lines = [Model.tooltip(service.status)]
+    var extra = Proton.tooltip(root.shieldInfo, service.status, service.protonStatus)
+    if (extra) lines.push(extra)
+    if (root.shieldState === "connected") lines.push(Traffic.summary(root.traffic))
+    return lines.join("\n")
   }
   readonly property string stateLabel: {
     if (!statusKnown) return "Status unknown"
@@ -65,7 +82,8 @@ Panel {
     if (Model.shouldDisconnectLocation(locations[selectedIndex], service.status.state)) service.disconnect()
     else {
       service.connectLocation(locations[selectedIndex])
-      close()
+      // Keep the panel open for an inline VPN switch confirmation.
+      if (!service.switchRequest) close()
     }
   }
 
@@ -115,6 +133,7 @@ Panel {
 
   onOpenedChanged: {
     service.panelOpen = opened
+    if (!opened && service.cancelSwitch) service.cancelSwitch()
     if (opened) {
       cursorActive = false
       selectedIndex = 0
@@ -162,7 +181,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: Model.tooltip(service.status) + (service.status.state === "connected" ? "\n" + Traffic.summary(root.traffic) : "")
+    tooltipText: root.tooltipText
     text: root.stateGlyph
     foreground: root.stateColor
     onPressed: function(buttonCode) {
@@ -223,7 +242,31 @@ Panel {
           }
 
           Column {
-            visible: service.status.state === "connected"
+            visible: !!service.switchRequest
+            width: parent.width
+            spacing: Style.space(6)
+            PanelSectionHeader { text: "CONFIRM VPN SWITCH"; foreground: root.warning; fontFamily: root.fontFamily }
+            Text {
+              width: parent.width
+              text: service.switchRequest
+                ? "Switch to " + (service.switchRequest.target === "proton" ? "Proton VPN (" : "WireGuard (") + service.switchRequest.label + ")? "
+                  + "The current VPN disconnects first. While the panel switches, traffic uses your regular connection. This takes a few seconds and can take up to about a minute."
+                : ""
+              textFormat: Text.PlainText
+              color: root.warning
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+            Row {
+              spacing: Style.space(6)
+              Button { focusable: true; text: "Switch"; foreground: root.warning; fontFamily: root.fontFamily; onClicked: service.confirmSwitch() }
+              Button { focusable: true; text: "Cancel"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.cancelSwitch() }
+            }
+          }
+
+          Column {
+            visible: root.shieldState === "connected"
             width: parent.width
             spacing: Style.space(5)
             PanelSectionHeader { text: "INTERFACE TRAFFIC"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -393,6 +436,111 @@ Panel {
             Button { enabled: root.statusKnown && !service.busy; focusable: true; text: "Directory"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.chooseImport(true) }
           }
 
+          PanelSeparator { visible: !!service.protonStatus; foreground: root.foreground }
+
+          Column {
+            visible: !!service.protonStatus
+            width: parent.width
+            spacing: Style.space(8)
+            PanelSectionHeader { text: "PROTON VPN"; foreground: root.foreground; fontFamily: root.fontFamily }
+            Text {
+              width: parent.width
+              text: Proton.summary(root.protonStatus)
+              textFormat: Text.PlainText
+              color: root.protonStatus && root.protonStatus.state === "connected" ? root.success : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              visible: text !== ""
+              width: parent.width
+              text: root.protonStatus ? (root.protonStatus.error || root.protonStatus.message || "") : ""
+              textFormat: Text.PlainText
+              color: root.protonStatus && root.protonStatus.error ? root.errorColor : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+              Button { visible: root.protonInstalled && root.protonStatus.account === "signed-out"; focusable: true; text: "Sign in"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.protonSignIn() }
+              Button { visible: root.protonInstalled && (root.protonStatus.state === "connected" || root.protonStatus.state === "connecting"); enabled: !service.busy; focusable: true; text: "Disconnect Proton VPN"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.disconnectProton() }
+            }
+            Flow {
+              visible: root.protonInstalled && root.protonStatus.account !== "signed-out"
+              width: parent.width
+              spacing: Style.space(6)
+              Repeater {
+                model: [{ kind: "fastest" }, { kind: "random" }, { kind: "p2p" }, { kind: "securecore" }, { kind: "tor" }]
+                Button {
+                  required property var modelData
+                  enabled: root.protonCanConnect
+                  focusable: true
+                  text: Proton.choiceLabel(modelData)
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: service.connectProton(modelData)
+                }
+              }
+            }
+            RowLayout {
+              visible: root.protonInstalled && root.protonStatus.account !== "signed-out"
+              width: parent.width
+              spacing: Style.space(6)
+              TextField {
+                id: protonServerField
+                Layout.fillWidth: true
+                foreground: root.foreground
+                placeholderText: "Server, for example IT#23 or CH-US#1"
+                maximumLength: 16
+                text: root.protonServer
+                onTextEdited: root.protonServer = text.trim().toUpperCase()
+                onAccepted: if (root.protonCanConnect && Proton.validServerName(root.protonServer)) service.connectProton({ kind: "server", server: root.protonServer })
+              }
+              Button { enabled: root.protonCanConnect && Proton.validServerName(root.protonServer); focusable: true; text: "Connect"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.connectProton({ kind: "server", server: root.protonServer }) }
+            }
+            RowLayout {
+              visible: root.protonInstalled && root.protonStatus.account !== "signed-out"
+              width: parent.width
+              spacing: Style.space(6)
+              TextField {
+                Layout.fillWidth: true
+                foreground: root.foreground
+                placeholderText: "Search Proton countries"
+                text: service.protonQuery || ""
+                onTextChanged: service.protonQuery = text
+              }
+              Button { enabled: !!service.loadProtonCountries; focusable: true; text: "Refresh"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.loadProtonCountries(true) }
+            }
+            Text {
+              visible: text !== ""
+              width: parent.width
+              text: service.protonCountriesError || service.protonCitiesError || ""
+              textFormat: Text.PlainText
+              color: root.errorColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+            Column {
+              id: protonCountryColumn
+              visible: root.protonInstalled && root.protonStatus.account !== "signed-out"
+              width: parent.width
+              spacing: Style.space(4)
+              Repeater {
+                model: service.filteredCountries || []
+                ProtonCountryRow {
+                  required property var modelData
+                  width: protonCountryColumn.width
+                  country: modelData
+                }
+              }
+            }
+          }
+
+
           Column {
             visible: service.status.installed
             width: parent.width
@@ -462,6 +610,52 @@ Panel {
         color: row.disconnectAction && service.status.state === "failed" ? root.errorColor : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  component ProtonCountryRow: Column {
+    id: countryRow
+    property var country: null
+    readonly property string code: country ? String(country.code) : ""
+    readonly property bool expanded: root.protonExpanded === code
+    readonly property var cities: (service.protonCities || {})[code] || []
+    spacing: Style.space(3)
+
+    RowLayout {
+      width: parent.width
+      spacing: Style.space(6)
+      Text { text: Model.countryFlag(countryRow.code); color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; Layout.preferredWidth: Style.space(28) }
+      Text { Layout.fillWidth: true; text: countryRow.country ? countryRow.country.name + " (" + countryRow.code + ")" : ""; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
+      Button { enabled: root.protonCanConnect; focusable: true; text: "Fastest"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.connectProton({ kind: "country", country: countryRow.code, name: countryRow.country.name }) }
+      Button {
+        focusable: true
+        text: countryRow.expanded ? "Hide cities" : "Cities"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        onClicked: {
+          root.protonExpanded = countryRow.expanded ? "" : countryRow.code
+          if (root.protonExpanded && service.loadProtonCities) service.loadProtonCities(countryRow.code)
+        }
+      }
+    }
+    Flow {
+      visible: countryRow.expanded
+      width: parent.width
+      leftPadding: Style.space(34)
+      spacing: Style.space(4)
+      Text { visible: countryRow.cities.length === 0; text: "Loading cities"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+      Repeater {
+        model: countryRow.expanded ? countryRow.cities : []
+        Button {
+          required property var modelData
+          enabled: root.protonCanConnect
+          focusable: true
+          text: modelData.name + (modelData.features && modelData.features.length ? " · " + modelData.features.join(", ") : "")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: service.connectProton({ kind: "city", country: countryRow.code, city: modelData.name })
+        }
       }
     }
   }

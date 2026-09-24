@@ -1,0 +1,343 @@
+// Proton VPN adapter model: pure parsing, validation and state helpers.
+//
+// proton-vpn-cli 1.0.3 has no machine-readable output, so every parser here
+// accepts only the exact shapes that release prints and returns "unknown"
+// otherwise. Unknown never becomes "connected". The line and table formats
+// are pinned in tests/plugin/proton.test.js. Parsing ideas (ANSI stripping,
+// the outdated-server-list preface, nmcli ProtonVPN naming) follow
+// io.github.grichard99.omaproton-vpn (MIT); the code here is independent.
+
+var STALE_MS = 15000
+var OUTDATED = /^Server list is outdated/
+
+function text(value) {
+  return value === undefined || value === null ? "" : String(value)
+}
+
+function stripAnsi(value) {
+  return text(value).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\r/g, "")
+}
+
+function printable(value, max) {
+  var s = text(value)
+  return s.length > 0 && s.length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(s)
+}
+
+function lines(raw) {
+  return stripAnsi(raw).split("\n").map(function(line) { return line.replace(/\s+$/, "") })
+}
+
+// ---- argv validation -------------------------------------------------------
+
+function validCountryCode(value) {
+  return typeof value === "string" && /^[A-Z]{2}$/.test(value)
+}
+
+// Observed logical-server names: IT#23, CH-US#1, US-CA#148, JP-FREE#1,
+// FR#13-TOR and US-CO#21-TOR. Nothing else is passed to the CLI.
+function validServerName(value) {
+  return typeof value === "string" && /^[A-Z]{2}(-[A-Z]{2,4})?#[0-9]{1,5}(-TOR)?$/.test(value)
+}
+
+// City names come from `protonvpn cities list`; accented Latin letters occur
+// (Bogotá, São Paulo). Values are argv items, never shell text, but they are
+// still restricted so that nothing can look like an option or a control code.
+function validCity(value) {
+  return typeof value === "string" && value.length >= 1 && value.length <= 64
+    && /^[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff][A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff .,'()-]*$/.test(value)
+    && !/\s$/.test(value)
+}
+
+var QUICK = {
+  fastest: { args: [], label: "Fastest" },
+  random: { args: ["--random"], label: "Random" },
+  p2p: { args: ["--p2p"], label: "Fastest P2P" },
+  securecore: { args: ["--securecore"], label: "Secure Core" },
+  tor: { args: ["--tor"], label: "Tor" }
+}
+
+function connectArgs(choice) {
+  if (!choice || typeof choice !== "object") return null
+  var kind = text(choice.kind)
+  if (QUICK.hasOwnProperty(kind)) return ["connect"].concat(QUICK[kind].args)
+  if (kind === "country") return validCountryCode(choice.country) ? ["connect", "--country", choice.country] : null
+  // The CLI ignores --country when --city is given, so only the city is sent.
+  if (kind === "city") return validCity(choice.city) ? ["connect", "--city", choice.city] : null
+  if (kind === "server") return validServerName(choice.server) ? ["connect", choice.server] : null
+  return null
+}
+
+function choiceLabel(choice) {
+  if (!choice) return ""
+  if (QUICK.hasOwnProperty(text(choice.kind))) return QUICK[choice.kind].label
+  if (choice.kind === "country") return text(choice.name || choice.country)
+  if (choice.kind === "city") return text(choice.city)
+  if (choice.kind === "server") return text(choice.server)
+  return ""
+}
+
+// ---- CLI output parsers ----------------------------------------------------
+
+// `protonvpn status`: "Status: Disconnected", or Status/Server/Load/Protocol.
+function parseStatus(raw) {
+  var unknown = { ok: false, state: "unknown", server: "", location: "", load: "", protocol: "" }
+  var fields = {}
+  var rows = lines(raw)
+  for (var i = 0; i < rows.length; i++) {
+    var line = rows[i].trim()
+    if (!line || OUTDATED.test(line)) continue
+    var match = line.match(/^(Status|Server|Load|Protocol): ?(.*)$/)
+    if (!match) continue
+    if (fields.hasOwnProperty(match[1])) return unknown
+    fields[match[1]] = match[2].trim()
+  }
+  if (fields.Status === "Disconnected")
+    return { ok: true, state: "disconnected", server: "", location: "", load: "", protocol: "" }
+  if (fields.Status !== "Connected") return unknown
+  var server = text(fields.Server).match(/^(\S+) in (.+)$/)
+  if (!server || !validServerName(server[1]) || !printable(server[2], 100)) return unknown
+  if (!/^[0-9]{1,3}%$/.test(text(fields.Load)) || !/^[a-z0-9-]{1,32}$/.test(text(fields.Protocol))) return unknown
+  return { ok: true, state: "connected", server: server[1], location: server[2], load: fields.Load, protocol: fields.Protocol }
+}
+
+// `protonvpn countries list`: "Country  Code" table, rows "Name<spaces>CC".
+function parseCountries(raw) {
+  var result = []
+  var seen = {}
+  var rows = lines(raw)
+  for (var i = 0; i < rows.length; i++) {
+    var match = rows[i].match(/^(\S.*?)\s{2,}([A-Z]{2})$/)
+    if (!match || match[1] === "Country" || !printable(match[1], 64) || seen[match[2]]) continue
+    seen[match[2]] = true
+    result.push({ name: match[1], code: match[2] })
+  }
+  return result
+}
+
+// `protonvpn cities list CC`: "Cities in X:" then a "City  Features" table.
+function parseCities(raw) {
+  var result = []
+  var rows = lines(raw)
+  var state = 0
+  for (var i = 0; i < rows.length; i++) {
+    var line = rows[i]
+    if (state === 0) { if (/^City\s{2,}Features$/.test(line)) state = 1; continue }
+    if (state === 1) { state = /^-+\s+-+$/.test(line) ? 2 : 0; continue }
+    if (!line) break
+    var match = line.match(/^(\S.*?)(?:\s{2,}(.*))?$/)
+    if (!match || !validCity(match[1])) continue
+    var features = text(match[2]).split(",").map(function(item) { return item.trim() })
+      .filter(function(item) { return /^[A-Za-z0-9 -]{1,20}$/.test(item) })
+    result.push({ name: match[1], features: features })
+  }
+  return result
+}
+
+// `protonvpn info` prints "Account: '<name>'" or "Account: 'None'". Only the
+// signed-in state is kept; the account name never leaves this function.
+function parseAccount(raw) {
+  var rows = lines(raw)
+  for (var i = 0; i < rows.length; i++) {
+    var match = rows[i].trim().match(/^Account: '(.*)'$/)
+    if (!match) continue
+    if (match[1] === "None") return "signed-out"
+    return match[1] ? "signed-in" : "unknown"
+  }
+  return "unknown"
+}
+
+function accountFromError(raw) {
+  return /authentication required|not signed in|not logged in/i.test(stripAnsi(raw)) ? "signed-out" : "unknown"
+}
+
+// `protonvpn config list`: exactly one "kill-switch  <value>" row.
+function parseKillSwitch(raw) {
+  var found = []
+  var rows = lines(raw)
+  for (var i = 0; i < rows.length; i++) {
+    var match = rows[i].match(/^kill-switch\s{2,}([a-z-]{1,20})$/)
+    if (match) found.push(match[1])
+  }
+  return found.length === 1 ? found[0] : ""
+}
+
+// The CLI prints click errors as "Error: <message>". Show the message only.
+function errorMessage(raw, fallback) {
+  var rows = lines(raw).map(function(line) { return line.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim() })
+    .filter(function(line) { return line !== "" })
+  var message = ""
+  for (var i = rows.length - 1; i >= 0 && !message; i--) {
+    var match = rows[i].match(/^Error:\s*(.+)$/)
+    if (match) message = match[1]
+  }
+  for (var j = rows.length - 1; j >= 0 && !message; j--) {
+    if (!OUTDATED.test(rows[j]) && !/^Usage:/.test(rows[j]) && !/^Try '/.test(rows[j])) message = rows[j]
+  }
+  message = message || text(fallback)
+  return message.length > 300 ? message.substring(0, 297) + "..." : message
+}
+
+// nmcli -t escapes ":" and "\" inside fields.
+function splitTerse(line) {
+  var fields = [""]
+  for (var i = 0; i < line.length; i++) {
+    var c = line.charAt(i)
+    if (c === "\\" && i + 1 < line.length) { fields[fields.length - 1] += line.charAt(++i); continue }
+    if (c === ":") fields.push("")
+    else fields[fields.length - 1] += c
+  }
+  return fields
+}
+
+// `nmcli -t -f NAME,UUID,TYPE,DEVICE,STATE connection show --active`.
+// Exactly one "ProtonVPN <server>" wireguard connection on proton0 is a
+// Proton tunnel. Any other connection using that name prefix or that device
+// makes the observation ambiguous (unknown), never a fallback match.
+function parseActive(raw) {
+  var candidates = []
+  var rows = lines(raw)
+  for (var i = 0; i < rows.length; i++) {
+    if (!rows[i]) continue
+    var fields = splitTerse(rows[i])
+    if (fields.length !== 5) {
+      // A malformed row mentioning Proton is ambiguous, never skipped.
+      if (rows[i].indexOf("ProtonVPN ") !== -1 || rows[i].indexOf("proton0") !== -1)
+        return { ok: true, match: "ambiguous", server: "", activated: false }
+      continue
+    }
+    if (fields[0].indexOf("ProtonVPN ") !== 0 && fields[3] !== "proton0") continue
+    candidates.push(fields)
+  }
+  if (candidates.length === 0) return { ok: true, match: "none", server: "", activated: false }
+  var row = candidates[0]
+  if (candidates.length !== 1 || row[0].indexOf("ProtonVPN ") !== 0 || row[2] !== "wireguard" || row[3] !== "proton0")
+    return { ok: true, match: "ambiguous", server: "", activated: false }
+  var server = row[0].substring(10)
+  return { ok: true, match: "one", server: validServerName(server) ? server : "", activated: row[4] === "activated" }
+}
+
+function filterCountries(countries, query) {
+  var needle = text(query).trim().toLowerCase()
+  var source = Array.isArray(countries) ? countries : []
+  if (!needle) return source.slice()
+  return source.filter(function(item) {
+    return text(item.name).toLowerCase().indexOf(needle) !== -1 || text(item.code).toLowerCase() === needle
+  })
+}
+
+// ---- state -----------------------------------------------------------------
+
+function fresh(observation, now) {
+  return !!observation && observation.ok === true && Number(observation.at) > 0 && now - observation.at <= STALE_MS
+}
+
+// nmcli is the authority for "a Proton tunnel exists"; the slower CLI status
+// only adds details, and a newer CLI "connected" that nmcli does not show is
+// a contradiction (unknown).
+function deriveState(input) {
+  var s = input || {}
+  if (s.installed === false) return "absent"
+  if (s.action === "connect") return "connecting"
+  if (s.action === "disconnect") return "disconnecting"
+  var nm = s.nm || {}
+  if (!fresh(nm, s.now)) return "unknown"
+  if (nm.match === "one") return nm.activated ? "connected" : "connecting"
+  if (nm.match !== "none") return "unknown"
+  var cli = s.cli || {}
+  if (fresh(cli, s.now) && cli.state === "connected" && cli.at > nm.at) return "unknown"
+  return "disconnected"
+}
+
+function buildStatus(input) {
+  var s = input || {}
+  var state = deriveState(s)
+  var nm = s.nm || {}
+  var cli = s.cli || {}
+  var details = state === "connected" && fresh(cli, s.now) && cli.state === "connected" && cli.server === nm.server
+  return {
+    installed: s.installed,
+    state: state,
+    phase: text(s.phase),
+    error: text(s.error),
+    message: text(s.message),
+    account: text(s.account) || "unknown",
+    server: state === "connected" || state === "connecting" ? text(nm.server) : "",
+    location: details ? cli.location : "",
+    load: details ? cli.load : "",
+    protocol: details ? cli.protocol : ""
+  }
+}
+
+function wireGuardActive(status, recovery) {
+  var value = status || {}
+  var state = text(value.state)
+  return value.enabled === true || state === "connected" || state === "connecting" || state === "failed"
+    || state === "enabled-unverified" || (state === "unknown" && recovery === true)
+}
+
+// Proton may start only after a WireGuard status poll newer than the
+// disconnect reports the backend disabled (its firewall is then removed).
+function wireGuardReleased(status, observedAt, disconnectedAt) {
+  var value = status || {}
+  return value.state === "disabled" && value.enabled === false && Number(observedAt) > Number(disconnectedAt)
+}
+
+// `absent` is true only when the WireGuard backend is known not installed.
+// Proton renders green only against a known-disabled or known-absent
+// WireGuard; unknown WireGuard state keeps the shield muted, never green.
+function shield(wg, proton, recovery, absent) {
+  var value = wg || {}
+  var wgState = text(value.state) || "unknown"
+  var wgNamed = wgState !== "disabled" && wgState !== "unknown"
+  var wgResult = { state: wgState, vpn: wgNamed ? "WireGuard" : "", label: "WireGuard " + wgState }
+  if (!proton || proton.state === "absent" || !proton.state) return wgResult
+  if (proton.phase) return { state: "connecting", vpn: "", label: "Switching VPN" }
+  var pState = proton.state
+  var pActive = pState === "connected" || pState === "connecting" || pState === "disconnecting"
+  var wgActive = wireGuardActive(value, recovery)
+  if (pActive && wgActive) return { state: "conflict", vpn: "", label: "Conflict: WireGuard and Proton VPN both report active" }
+  if (pState === "connected" && wgState === "unknown" && absent !== true)
+    return { state: "unknown", vpn: "", label: "WireGuard status unknown; Proton VPN connected" }
+  if (pState === "connected") return { state: "connected", vpn: "Proton", label: "Proton VPN connected" }
+  if (pActive) return { state: "connecting", vpn: "Proton", label: "Proton VPN " + pState }
+  if (wgActive || wgNamed) return wgResult
+  if (proton.error) return { state: "failed", vpn: "Proton", label: "Proton VPN error" }
+  if (pState === "unknown") return { state: "unknown", vpn: "", label: "Proton VPN status unknown" }
+  return wgResult
+}
+
+function tooltip(result, wg, proton) {
+  if (!proton || proton.state === "absent" || !proton.state) return ""
+  var out = []
+  if (result && result.state === "conflict") out.push("Conflict: WireGuard and Proton VPN both report active; protection is unclear")
+  else if (result && result.vpn) out.push("Active VPN: " + (result.vpn === "Proton" ? "Proton VPN" : result.vpn))
+  if (proton.phase) out.push("Switching VPN: traffic can use the regular connection")
+  out.push("Proton VPN: " + proton.state)
+  if (proton.server) out.push("Proton server: " + proton.server + (proton.location ? " (" + proton.location + ")" : ""))
+  if (proton.load || proton.protocol) out.push([proton.load ? "Load " + proton.load : "", proton.protocol].filter(function(v) { return !!v }).join(" · "))
+  if (proton.error) out.push("Proton error: " + proton.error)
+  return out.join("\n")
+}
+
+function summary(status) {
+  if (!status || !status.state) return ""
+  if (status.installed === false) return "Proton VPN CLI (protonvpn) is not installed"
+  if (status.installed !== true) return "Checking for the Proton VPN CLI"
+  if (status.account === "signed-out" && status.state !== "connected") return "Signed out. Sign in with Proton's own client; this panel never handles your password."
+  if (status.state === "connected")
+    return ["Connected", status.server, status.location, status.load ? "Load " + status.load : "", status.protocol]
+      .filter(function(v) { return !!v }).join(" · ")
+  if (status.state === "connecting") return "Connecting" + (status.server ? " · " + status.server : "")
+  if (status.state === "disconnecting") return "Disconnecting"
+  if (status.state === "disconnected") return "Disconnected" + (status.account === "signed-in" ? " · signed in" : "")
+  return "Status unknown; not treated as protected"
+}
+
+// Traffic sampler key: a WireGuard profile ID, or "@proton" (which cannot be
+// a profile ID) for the exact Proton mapping mode of traffic.py.
+function trafficProfile(wg, result) {
+  if (!result || result.state !== "connected") return ""
+  if (result.vpn === "Proton") return "@proton"
+  var value = wg || {}
+  return result.vpn === "WireGuard" && value.state === "connected" ? text(value.currentProfile) : ""
+}

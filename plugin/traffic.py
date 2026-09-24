@@ -26,6 +26,58 @@ def parse_mapping(text, profile):
     return matches[0] if len(matches) == 1 else None
 
 
+PROTON_PROFILE = '@proton'
+UUID_RE = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+
+
+def split_terse(line):
+    # nmcli -t escapes ':' and '\\' inside fields with a backslash.
+    fields, current, escaped = [], '', False
+    for char in line:
+        if escaped:
+            current += char
+            escaped = False
+        elif char == '\\':
+            escaped = True
+        elif char == ':':
+            fields.append(current)
+            current = ''
+        else:
+            current += char
+    fields.append(current)
+    return fields
+
+
+def parse_proton_mapping(text):
+    """Separate Proton mode: exactly one 'ProtonVPN <server>' wireguard
+    connection on proton0. Any other row using that name prefix or device
+    makes the result ambiguous; there is no fallback to other tunnels."""
+    candidates = []
+    for line in text.splitlines():
+        fields = split_terse(line)
+        if len(fields) != 4:
+            # A malformed row mentioning Proton is ambiguous, never skipped.
+            if 'ProtonVPN ' in line or 'proton0' in line:
+                return None
+            continue
+        name, uuid, kind, interface = fields
+        if name.startswith('ProtonVPN ') or interface == 'proton0':
+            candidates.append((name, uuid, kind, interface))
+    if len(candidates) != 1:
+        return None
+    name, uuid, kind, interface = candidates[0]
+    if (name.startswith('ProtonVPN ') and kind == 'wireguard'
+            and interface == 'proton0' and re.fullmatch(UUID_RE, uuid)):
+        return (uuid, interface)
+    return None
+
+
+def mapping_for(text, profile):
+    if profile == PROTON_PROFILE:
+        return parse_proton_mapping(text)
+    return parse_mapping(text, profile)
+
+
 def active_connections():
     return subprocess.run(['nmcli', '-t', '-f', 'NAME,UUID,TYPE,DEVICE',
                            'connection', 'show', '--active'], check=True,
@@ -34,7 +86,7 @@ def active_connections():
 
 def sample(profile, query=active_connections, root=Path('/sys/class/net')):
     try:
-        mapping = parse_mapping(query(), profile)
+        mapping = mapping_for(query(), profile)
         if mapping is None:
             return {'ok': False}
         uuid, interface = mapping
@@ -46,7 +98,7 @@ def sample(profile, query=active_connections, root=Path('/sys/class/net')):
         # Reject interfaces recreated or re-assigned during the read.
         if (index <= 0 or rx < 0 or tx < 0
                 or int((base / 'ifindex').read_text()) != index
-                or parse_mapping(query(), profile) != mapping):
+                or mapping_for(query(), profile) != mapping):
             return {'ok': False}
         return {'ok': True, 'profile': profile, 'uuid': uuid,
                 'interface': interface, 'ifindex': index,

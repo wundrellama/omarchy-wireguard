@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell.Io
 import "../../plugin" as Vpn
 import "../../plugin/Model.js" as Model
+import "../../plugin/Proton.js" as Proton
 
 // Explicit visual-test fixture. Never delegates any action to the real backend.
 Vpn.BarWidget {
@@ -14,8 +15,19 @@ Vpn.BarWidget {
     id: fixture
     property var settings: ({})
     // Deliberately synthetic: no sampler runs when serviceOverride is injected.
-    readonly property var traffic: status.state === "connected"
+    readonly property var traffic: shield.state === "connected"
       ? ({rx: 15728640, tx: 2097152, down: 131072, up: 16384}) : null
+    // Synthetic Proton state. "none" omits every Proton field, as older fixtures do.
+    property string protonMode: "disconnected"
+    property var protonStatus: null
+    readonly property var shield: Proton.shield(status, protonStatus, false)
+    property string protonQuery: ""
+    property var switchRequest: null
+    readonly property var protonCountries: [{name: "Switzerland", code: "CH"}, {name: "United States", code: "US"}, {name: "Bosnia and Herzegovina", code: "BA"}]
+    readonly property var filteredCountries: protonStatus ? Proton.filterCountries(protonCountries, protonQuery) : []
+    readonly property var protonCities: ({CH: [{name: "Zurich", features: ["P2P", "Tor"]}], US: [{name: "New York", features: ["P2P"]}, {name: "São Paulo test city with a long name", features: []}]})
+    property string protonCountriesError: ""
+    property string protonCitiesError: ""
     property bool active: false
     property string currentUser: ""
     property bool panelOpen: false
@@ -51,12 +63,48 @@ Vpn.BarWidget {
       var next = Model.mergeStatusCatalog(Model.parseStatus(JSON.stringify({ok: true, result: raw})), catalog)
       if (next.reason) next.reason = "PREVIEW ONLY — " + next.reason
       status = next
+      protonScenario(mode === "connected" || mode === "connecting" || mode === "failed" ? "disconnected" : protonMode, true)
       query = ""
       lastAction = ""
       lastError = ""
       actionError = ""
       actionMessage = "PREVIEW ONLY — synthetic profiles; no networking commands."
     }
+
+    // Modes: none, absent, signed-out, disconnected, connecting, connected, error, conflict, confirm.
+    // Each Proton mode also sets WireGuard: connected for conflict and confirm,
+    // disabled otherwise, so the shield shows the scenario it is named for.
+    // scenario() passes keepWireGuard to preserve the WireGuard state it just set.
+    function protonScenario(mode, keepWireGuard) {
+      protonMode = mode
+      switchRequest = null
+      if (!keepWireGuard) {
+        var wgOn = mode === "conflict" || mode === "confirm"
+        status = Model.mergeStatusCatalog(Model.parseStatus(JSON.stringify({ok: true, result: wgOn
+          ? {mode: "connected", enabled: true, current_profile: "preview-home", target: "profile:preview-home"}
+          : {mode: "disabled", enabled: false, target: null}})), catalog)
+      }
+      var base = {installed: true, account: "signed-in", state: "disconnected", phase: "", error: "", message: "",
+        server: "", location: "", load: "", protocol: ""}
+      if (mode === "none") { protonStatus = null; return }
+      if (mode === "absent") { base.installed = false; base.state = "absent" }
+      if (mode === "signed-out") base.account = "signed-out"
+      if (mode === "connecting") { base.state = "connecting"; base.message = "PREVIEW ONLY — Connecting Proton VPN: Switzerland" }
+      if (mode === "connected" || mode === "conflict") {
+        base.state = "connected"; base.server = "CH-US#1"; base.location = "New York, via Switzerland"; base.load = "34%"; base.protocol = "wireguard"
+      }
+      if (mode === "error") base.error = "PREVIEW ONLY — Server selection by ID is not available on the free plan."
+      protonStatus = base
+      if (mode === "confirm") switchRequest = {target: "proton", label: "Switzerland", choice: {kind: "country", country: "CH"}}
+    }
+
+    function connectProton(choice) { record("proton:" + JSON.stringify(Proton.connectArgs(choice))) }
+    function disconnectProton() { record("proton:disconnect") }
+    function protonSignIn() { record("proton:sign-in terminal refused in preview") }
+    function loadProtonCountries(force) { record("proton:countries" + (force ? " refresh" : "")) }
+    function loadProtonCities(code) { record("proton:cities " + code) }
+    function confirmSwitch() { record("switch:" + JSON.stringify(switchRequest)); switchRequest = null }
+    function cancelSwitch() { switchRequest = null }
 
     function refresh() {}
     function record(action) {
@@ -84,6 +132,7 @@ Vpn.BarWidget {
   IpcHandler {
     target: "wundrellama.wireguard-preview-controls"
     function scenario(mode: string): string { fixture.scenario(mode); return "ok" }
+    function proton(mode: string): string { fixture.protonScenario(mode); return "ok" }
     function review(): string { fixture.chooseImport(); return "ok" }
     function pickerReturned(): string {
       preview.close()

@@ -16,6 +16,13 @@ for (const raw of [sample(14,2,3),sample(14,3000,5000,{ifindex:43}),sample(14,30
 assert.equal(T.accept(next,sample(12,3000,5000),'home'),null);
 assert.equal(T.accept(next,sample(11,3000,5000),'home'),null);
 assert.equal(T.accept(null,sample(14,3000,5000),''),null); // disconnected must reject
+// Proton mode accepts only the exact proton0 interface under the reserved key.
+const proton = (time, rx, tx, extra={}) => JSON.stringify({ok:true,profile:'@proton',uuid:'uuid',interface:'proton0',ifindex:9,time,rx,tx,...extra});
+const p1 = T.accept(null, proton(10, 100, 200), '@proton'); assert.equal(p1.rx, 100);
+assert.equal(T.accept(p1, proton(11, 612, 712), '@proton').down, 512);
+assert.equal(T.accept(null, proton(10, 1, 2, {interface:'proton1'}), '@proton'), null);
+assert.equal(T.accept(null, proton(10, 1, 2, {interface:'owg-1234'}), '@proton'), null);
+assert.equal(T.accept(null, sample(10, 1, 2, {interface:'proton0'}), 'home'), null);
 assert.equal(typeof T.summary,'function');
 assert.equal(T.summary(null),'Traffic unavailable');
 assert.match(T.summary(next),/↓ 512 B\/s.*↑ 1.0 KiB\/s/);

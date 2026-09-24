@@ -87,6 +87,8 @@ Reject ambiguous private-route overlap initially, including overlaps with other 
 
 Use the installed official `protonvpn` client in the user session. Do not copy its account credentials into the root WireGuard service. Start with status, disconnect, fastest, country, and exact server selection. Retain existing Proton account/session storage.
 
+**Status:** The first version is on the `feat/proton-adapter` branch and is not deployed. It adds Proton sign-in, connect options, disconnect, status, traffic, and confirmed switching between the two VPNs with a short unprotected period. The switch to WireGuard stops if the Proton kill switch is on. See [Proton VPN](PROTON.md). Automated tests use synthetic commands only. A live Proton connection and the panel appearance are not verified yet.
+
 Define one internet-exit owner before enabling provider switching. Explicitly coordinate DNS and firewall ownership; never assume two independent kill switches compose safely. Do not promise a leak-free handoff until tested. Unsupported handoffs must be refused rather than silently falling back to direct traffic.
 
 ## Milestone 3 — Feature parity and hardening
