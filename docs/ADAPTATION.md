@@ -14,6 +14,7 @@ The maintainer imported a real hostname-endpoint profile, connected through the 
 - Live counters showed traffic rates and totals through the tunnel interface.
 - Monitoring exposed a reconnect every 92 seconds. The handshake limit (90 seconds) was shorter than the WireGuard rekey interval (about 120 seconds). The limit is now 180 seconds, the WireGuard key-rejection time. After deployment, five minutes of monitoring showed no teardown, steady totals, and zero retries.
 - Deployment needed a NetworkManager exception for `owg-*` interfaces. An older local rule excluded every WireGuard device.
+- The first real Proton VPN connect failed for the same reason, on the `proton0` interface. After an exception for `proton0`, the Proton connection worked.
 
 Suspend/resume, Wi-Fi changes, and captive portals remain untested.
 
