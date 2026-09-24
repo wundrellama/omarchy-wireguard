@@ -4,7 +4,18 @@
 
 Replace the separate WireGuard TUI widget and Omaproton widget with one native Omarchy panel. Keep the official Proton client for Proton authentication and provider features. Keep private-network reachability distinct from internet-exit protection.
 
-This is a development branch, not a deployment. Do not install its privileged backend onto the active desktop until the migration and network-verification gates below are met. Existing WireGuard profiles, Proton state, bar configuration, and running services remain untouched during development.
+The personal full-tunnel path is deployed on the maintainer's desktop and replaces `limehawk.vpn`. `omaproton-vpn` remains in use until the Proton adapter exists. Private-network tunnels are not implemented. The gates below still apply to each new feature before deployment.
+
+### Live deployment record
+
+The maintainer imported a real hostname-endpoint profile, connected through the panel, and passed all seven backend checks. The following items were observed on the live system:
+
+- A reboot while connected started the early firewall before NetworkManager. The backend then reconnected the profile automatically.
+- Live counters showed traffic rates and totals through the tunnel interface.
+- Monitoring exposed a reconnect every 92 seconds. The handshake limit (90 seconds) was shorter than the WireGuard rekey interval (about 120 seconds). The limit is now 180 seconds, the WireGuard key-rejection time. After deployment, five minutes of monitoring showed no teardown, steady totals, and zero retries.
+- Deployment needed a NetworkManager exception for `owg-*` interfaces. An older local rule excluded every WireGuard device.
+
+Suspend/resume, Wi-Fi changes, and captive portals remain untested.
 
 ## Milestone 1 — Personal WireGuard
 
@@ -47,7 +58,7 @@ The picker handoff now defers dispatch until Quickshell updates its cached `busy
 
 Hostname endpoints previously deadlocked before NetworkManager activation because physical DNS had already been restricted to `~lan`. The backend now temporarily adds the validated full endpoint hostname as a routing suffix, retaining physical `default-route=no`, through both backend resolution and NetworkManager activation. It removes the route afterward and tracks partial mutations for failure/retry/recovery cleanup without replacing the original persisted DNS baseline. Numeric endpoints need no exception. Resolved suffix routing also includes descendants; this is not exact-QNAME filtering or general DNS fallback.
 
-Verification for these local corrections: 120 backend tests and 2 socket integration tests pass. Review exposed a cleanup-inspection error outside its handler; a failing-then-passing regression now verifies failed status, a visible cleanup error, retained cleanup tracking, and no automatic failover. When classification is unavailable, cleanup does not restore potentially permissive baselines; firewall protection remains in place and tracked routes await successful cleanup. The parent reran the real hostname and numeric harnesses after this correction: `observed-hostname-reviewed.json` and `observed-numeric-reviewed.json` record 14 and 45 checks respectively, matching final backend hashes and unchanged host fingerprints. See [lifecycle test instructions and limitations](../tests/lifecycle/README.md). These backend corrections are not yet deployed, and a successful synthetic handshake is not proof of the user's provider connection. Earlier checkpoint counts and hash claims describe their recorded revisions, not the latest changes.
+Verification for these local corrections: 120 backend tests and 2 socket integration tests pass. Review exposed a cleanup-inspection error outside its handler; a failing-then-passing regression now verifies failed status, a visible cleanup error, retained cleanup tracking, and no automatic failover. When classification is unavailable, cleanup does not restore potentially permissive baselines; firewall protection remains in place and tracked routes await successful cleanup. The parent reran the real hostname and numeric harnesses after this correction: `observed-hostname-reviewed.json` and `observed-numeric-reviewed.json` record 14 and 45 checks respectively, matching final backend hashes and unchanged host fingerprints. See [lifecycle test instructions and limitations](../tests/lifecycle/README.md). These backend corrections are now deployed; see the live deployment record above. Earlier checkpoint counts and hash claims describe their recorded revisions, not the latest changes.
 
 ### Remaining personal-tunnel work
 
