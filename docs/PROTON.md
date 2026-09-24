@@ -12,6 +12,9 @@ This is the first version of the Proton VPN adapter. It uses the official Proton
   - The fastest server in a city. The panel loads the cities for a country when you expand it.
   - A server name, such as `IT#23` or `CH-US#1`.
 - Disconnects.
+- Has one search field. The results change while you type. They show the countries (name or code), the cities, and the servers that match, for example `US-CA#3`, `los angeles`, or `tor`. Select a result to connect, or press Enter to connect the first result. A search shows a maximum of 30 results.
+- Shows one button near the top of the panel for the last connection. See [Quick connect button](#quick-connect-button).
+- Shows **Copy diagnostics** in **BACKEND MAINTENANCE**, at the bottom of the panel.
 - Shows the server, location, load, protocol, and traffic rates for the Proton tunnel.
 
 The panel checks each value before it runs a command:
@@ -23,6 +26,49 @@ The panel checks each value before it runs a command:
 | City | Letters, digits, spaces, and `. , ' ( ) -`. It must not start with `-`. The maximum is 64 characters. |
 
 The panel sends each value as a separate command argument. It does not use a shell. If `protonvpn` fails, the panel shows the error message from Proton.
+
+## Server search data
+
+The official client keeps its server list in `~/.cache/Proton/VPN/serverlist.json` (or `$XDG_CACHE_HOME/Proton/VPN/serverlist.json`). This file is large, about 24 MB. The panel does not read it. The helper `plugin/proton_servers.py` reads it one time for each session, and again when you select **Refresh**. The helper only reads the file. It does not run `protonvpn`, and it does not write files.
+
+The helper keeps a server only if all of these are true:
+
+- `Status` is 1 (the server is available).
+- `Tier` is not more than the `MaxTier` value in the file.
+- The name, country code, and load are correct.
+
+For each server, the helper gives the name, exit country, city, features, load, and tier. The feature names come from the `Features` bit field. The bit values are the same as `ServerFeatureEnum` in the installed Proton library: 1 is Secure Core, 2 is Tor, 4 is P2P, 8 is streaming, and 16 is IPv6.
+
+If the file is missing, too large (more than 64 MB), or not in the correct format, the helper gives an error. Then the search shows only countries and the cities that the panel loaded. The panel checks each server name again before it can connect.
+
+## Quick connect button
+
+The panel shows one large button near the top.
+
+| VPN status | Button |
+| --- | --- |
+| No VPN is active. | **Connect: <last>**, for example **Connect: Home**, **Connect: Proton US-CA#370**, **Connect: Proton Fastest**, **Connect: Proton Switzerland**, or **Connect: Proton Los Angeles**. |
+| WireGuard is active, connecting, or failed. | **Disconnect <profile>**, for example **Disconnect Home**. |
+| Proton VPN is connected or connecting. This includes a connection that you started outside the panel. | **Disconnect Proton VPN**. |
+| Both VPNs are active. | **Conflict: both VPNs are active**. The button is disabled. Use the separate disconnect controls. |
+| A status is unknown. | **VPN status unknown**. The button is disabled. |
+| A switch is in progress. | **Switching VPN**. The button is disabled. |
+
+The button uses the usual connect and disconnect paths. If the other VPN is active, you must confirm the switch.
+
+The panel records a connection only after it is successful:
+
+- WireGuard: when a status check shows that the profile is connected.
+- Proton VPN: when `protonvpn connect` completes without an error.
+
+The record is in `$XDG_STATE_HOME/wundrellama-wireguard/last-connection.json` (default `~/.local/state`). The directory mode is 0700 and the file mode is 0600. The helper `plugin/last_connection.py` writes a temporary file and then renames it. The record has only the kind, the value, and the display name, for example `{"version": 1, "kind": "server", "value": "US-CA#370", "label": "US-CA#370"}`. It has no account data.
+
+The panel checks the record with the same rules that it uses to connect. A WireGuard profile must be in the current profile list. If the record is missing or not correct, the button uses:
+
+1. The most recent WireGuard profile from the backend.
+2. Proton Fastest, if Proton VPN is installed and you are signed in.
+
+If none of these is available, the panel does not show the button.
 
 ## Status and shield
 
@@ -85,7 +131,7 @@ Then reload NetworkManager with `sudo systemctl reload NetworkManager`. A reload
 
 These features are not in the first version:
 
-- Profiles and recent connections.
+- Profiles and a list of recent connections. (The panel keeps only the last connection.)
 - Proton settings changes, port forwarding, split tunneling, and Always On.
 - The world map and the traffic graph.
 
@@ -96,5 +142,8 @@ Keep the omaproton-vpn plugin installed until this plugin has the features that 
 - `tests/plugin/proton.test.js`: output parsers, value checks, command arguments, status, and shield states.
 - `tests/plugin/service-switch.test.js`: switching in both directions, failure stops, and stale results.
 - `tests/plugin/proton-panel.test.js`: panel bindings, confirmation, and fixtures without Proton fields.
+- `tests/plugin/quick-connect.test.js`: the quick connect button in each state, the last connection record, the search, and the panel order.
+- `tests/plugin/test_proton_servers.py`: the server list helper with synthetic files, including files that are not correct.
+- `tests/plugin/test_last_connection.py`: the last connection helper, file modes, and records that are not correct.
 - `tests/plugin/test_traffic.py`: the Proton traffic mode.
 - `tests/plugin/proton-offscreen.py`: the real service in offscreen Quickshell with synthetic `omarchy-wireguard`, `protonvpn`, and `nmcli` commands.

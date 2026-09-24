@@ -216,6 +216,177 @@ function parseActive(raw) {
   return { ok: true, match: "one", server: validServerName(server) ? server : "", activated: row[4] === "activated" }
 }
 
+// `proton_servers.py` output: {ok, fields, servers: [[name, country, city,
+// features, load, tier], ...]}. Every row is checked again here; a row that
+// fails any check is dropped, so only valid names can reach connectArgs.
+var FEATURE_WORDS = { securecore: true, tor: true, p2p: true, streaming: true, ipv6: true }
+
+function parseServerIndex(raw) {
+  var parsed
+  try { parsed = JSON.parse(text(raw)) } catch (error) { return { ok: false, servers: [] } }
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.servers)) return { ok: false, servers: [] }
+  var servers = []
+  for (var i = 0; i < parsed.servers.length && servers.length < 30000; i++) {
+    var row = parsed.servers[i]
+    if (!Array.isArray(row) || row.length !== 6 || !validServerName(row[0]) || !validCountryCode(row[1])) continue
+    if (!Array.isArray(row[3]) || !row[3].every(function(word) { return FEATURE_WORDS.hasOwnProperty(word) })) continue
+    if (typeof row[4] !== "number" || row[4] < 0 || row[4] > 100 || typeof row[5] !== "number") continue
+    servers.push({ name: row[0], country: row[1], city: validCity(row[2]) ? row[2] : "", features: row[3].slice(), load: row[4], tier: row[5] })
+  }
+  return { ok: true, servers: servers }
+}
+
+// One live search over countries (name or code), cities (from the server
+// index and loaded `cities list` output) and servers (name, city or feature
+// word). An empty query lists the countries. Other queries return at most
+// `limit` results (default 30): countries, then cities, then servers with
+// the exact name first and the lowest load next.
+function searchProton(query, countries, cities, servers, limit) {
+  var needle = text(query).trim().toLowerCase()
+  var max = limit > 0 ? limit : 30
+  var countryList = (Array.isArray(countries) ? countries : []).filter(function(item) {
+    return item && validCountryCode(item.code) && printable(item.name, 64)
+  })
+  var names = {}
+  countryList.forEach(function(item) { names[item.code] = item.name })
+  var countryResult = function(item) {
+    return { kind: "country", code: item.code, name: item.name, label: item.name + " (" + item.code + ")",
+      choice: { kind: "country", country: item.code, name: item.name } }
+  }
+  if (!needle) return countryList.map(countryResult)
+  var results = countryList.filter(function(item) {
+    return item.name.toLowerCase().indexOf(needle) !== -1 || item.code.toLowerCase() === needle
+  }).map(countryResult)
+  var serverList = Array.isArray(servers) ? servers : []
+  var seen = {}
+  var addCity = function(code, city) {
+    if (!validCountryCode(code) || !validCity(city) || city.toLowerCase().indexOf(needle) === -1 || seen[code + "\n" + city]) return
+    seen[code + "\n" + city] = true
+    results.push({ kind: "city", city: city, country: code, label: city, detail: names[code] || code,
+      choice: { kind: "city", country: code, city: city } })
+  }
+  var cityMap = cities && typeof cities === "object" ? cities : {}
+  for (var code in cityMap) (Array.isArray(cityMap[code]) ? cityMap[code] : []).forEach(function(item) { addCity(code, item && item.name) })
+  serverList.forEach(function(item) { addCity(item.country, item.city) })
+  var upper = needle.toUpperCase()
+  var matches = serverList.filter(function(item) {
+    return validServerName(item.name) && (item.name.toLowerCase().indexOf(needle) !== -1
+      || (item.city && item.city.toLowerCase().indexOf(needle) !== -1)
+      || (Array.isArray(item.features) && item.features.indexOf(needle) !== -1))
+  })
+  var rank = function(item) { return item.name === upper ? 0 : (item.name.indexOf(upper) === 0 ? 1 : 2) }
+  matches.sort(function(a, b) { return rank(a) - rank(b) || a.load - b.load || a.name.localeCompare(b.name) })
+  for (var i = 0; i < matches.length && results.length < max; i++) {
+    var server = matches[i]
+    results.push({ kind: "server", server: server.name, country: server.country, label: server.name,
+      detail: [server.city, names[server.country] || server.country, "Load " + server.load + "%"].concat(server.features)
+        .filter(function(v) { return !!v }).join(" · "),
+      choice: { kind: "server", server: server.name } })
+  }
+  return results.slice(0, max)
+}
+
+// ---- last connection and the quick connect button ---------------------------
+// A record is only a choice descriptor: {version: 1, kind, value, label}.
+// kind is "wireguard" (value = catalog location ID), a QUICK key (value ""),
+// "server", "country" or "city". It never holds account data.
+
+function lastFromLocation(location) {
+  if (!location || !printable(location.id, 128)) return null
+  var label = text(location.label || location.city || location.id)
+  return { version: 1, kind: "wireguard", value: text(location.id), label: printable(label, 128) ? label : text(location.id) }
+}
+
+function lastFromChoice(choice) {
+  if (!connectArgs(choice)) return null
+  var kind = choice.kind
+  var value = kind === "server" ? choice.server : kind === "country" ? choice.country : kind === "city" ? choice.city : ""
+  var label = choiceLabel(choice)
+  return { version: 1, kind: kind, value: value, label: printable(label, 128) ? label : value }
+}
+
+function validLast(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record) || record.version !== 1) return false
+  var keys = Object.keys(record).sort().join(",")
+  if (keys !== "kind,label,value,version" || !printable(record.label, 128) || typeof record.value !== "string") return false
+  if (record.kind === "wireguard") return printable(record.value, 128)
+  if (QUICK.hasOwnProperty(record.kind)) return record.value === ""
+  return !!connectArgs(lastChoice(record))
+}
+
+function lastChoice(record) {
+  if (QUICK.hasOwnProperty(record.kind)) return { kind: record.kind }
+  if (record.kind === "server") return { kind: "server", server: record.value }
+  if (record.kind === "country") return { kind: "country", country: record.value, name: record.label }
+  if (record.kind === "city") return { kind: "city", city: record.value }
+  return null
+}
+
+// Output of `last_connection.py read`. Anything unexpected gives null.
+function parseLastConnection(raw) {
+  var parsed
+  try { parsed = JSON.parse(text(raw)) } catch (error) { return null }
+  if (!parsed || parsed.ok !== true || !validLast(parsed.connection)) return null
+  return parsed.connection
+}
+
+function findLocation(locations, match) {
+  var list = Array.isArray(locations) ? locations : []
+  for (var i = 0; i < list.length; i++) if (list[i] && match(list[i])) return list[i]
+  return null
+}
+
+// The one quick button. Input: {wg, recovery, wgAbsent, proton, switching,
+// busy, protonBusy, record, locations, mru, countries}. protonBusy is true
+// while a Proton command (connect, disconnect, config read) is running. Output: {mode, label, vpn,
+// enabled, target}. mode is "connect", "disconnect", "disabled" or "hidden".
+// Unknown or conflicting status never connects and never guesses.
+function quickAction(input) {
+  var s = input || {}
+  var wg = s.wg || {}
+  var proton = s.proton || null
+  var off = function(label) { return { mode: "disabled", label: label, vpn: "", enabled: false, target: null } }
+  var protonKnown = !!proton && proton.installed !== false && proton.state !== "absent" && !!proton.state
+  var pState = protonKnown ? text(proton.state) : ""
+  if (s.switching || (proton && proton.phase)) return off("Switching VPN")
+  var busy = s.busy === true || s.protonBusy === true
+  var wgUnknown = text(wg.state || "unknown") === "unknown" && s.wgAbsent !== true
+  var wgActive = wireGuardActive(wg, s.recovery) || wg.state === "paused"
+  var pActive = pState === "connected" || pState === "connecting" || pState === "disconnecting"
+  if (wgActive && pActive) return off("Conflict: both VPNs are active")
+  if (wgUnknown || (protonKnown && pState === "unknown")) return off("VPN status unknown")
+  if (wgActive) return { mode: "disconnect", vpn: "wireguard", enabled: !busy, target: null,
+    label: "Disconnect " + text(wg.location || wg.targetLabel || "WireGuard") }
+  if (pActive) return { mode: "disconnect", vpn: "proton", enabled: !busy && pState !== "disconnecting", target: null,
+    label: "Disconnect Proton VPN" }
+  var wgReady = wg.state === "disabled" && s.wgAbsent !== true
+  var protonReady = protonKnown && proton.installed === true && pState === "disconnected" && proton.account !== "signed-out"
+  var connect = function(vpn, label, target) { return { mode: "connect", vpn: vpn, label: "Connect: " + label, enabled: !busy, target: target } }
+  var record = validLast(s.record) ? s.record : null
+  if (record && record.kind === "wireguard" && wgReady) {
+    var saved = findLocation(s.locations, function(item) { return item.id === record.value })
+    if (saved) return connect("wireguard", text(saved.label || saved.city || saved.id), { location: saved })
+  } else if (record && record.kind !== "wireguard" && protonReady) {
+    var choice = lastChoice(record)
+    var label = choiceLabel(choice)
+    if (record.kind === "country") {
+      var country = findLocation(s.countries, function(item) { return item.code === record.value })
+      label = country ? text(country.name) : record.label
+      choice.name = label
+    }
+    return connect("proton", "Proton " + label, { choice: choice })
+  }
+  var mru = Array.isArray(s.mru) ? s.mru : []
+  for (var i = 0; wgReady && i < mru.length; i++) {
+    var recent = findLocation(s.locations, function(item) {
+      return item.id === mru[i] || (Array.isArray(item.profileIds) && item.profileIds.indexOf(mru[i]) !== -1)
+    })
+    if (recent) return connect("wireguard", text(recent.label || recent.city || recent.id), { location: recent })
+  }
+  if (protonReady && proton.account === "signed-in") return connect("proton", "Proton Fastest", { choice: { kind: "fastest" } })
+  return { mode: "hidden", label: "", vpn: "", enabled: false, target: null }
+}
+
 function filterCountries(countries, query) {
   var needle = text(query).trim().toLowerCase()
   var source = Array.isArray(countries) ? countries : []

@@ -66,7 +66,8 @@ ShellRoot {
   }
 }
 ''')
-    env = dict(os.environ, PATH=str(commands) + ":/usr/bin", QT_QPA_PLATFORM="offscreen")
+    env = dict(os.environ, PATH=str(commands) + ":/usr/bin", QT_QPA_PLATFORM="offscreen",
+               XDG_STATE_HOME=str(stage / "state"), XDG_CACHE_HOME=str(stage / "cache"))
     result = subprocess.run(["/usr/bin/qs", "--no-color", "-p", str(stage / "shell.qml")],
                             capture_output=True, text=True, env=env, timeout=8)
     output = result.stdout + result.stderr

@@ -5,7 +5,7 @@ const path = require('node:path')
 const source = fs.readFileSync(path.join(__dirname,'../../plugin/ProtonService.qml'),'utf8')
 const load = name => { const c = {}; vm.createContext(c); vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugin/'+name),'utf8'), c); return c }
 const Proton = load('Proton.js')
-const NAMES = ['probeProcess','nmProcess','statusProcess','infoProcess','actionProcess','configProcess','countriesProcess','citiesProcess']
+const NAMES = ['probeProcess','nmProcess','statusProcess','infoProcess','actionProcess','configProcess','countriesProcess','citiesProcess','serversProcess']
 
 // Production ProtonService function bodies run against inert fake processes.
 // launch=false models Quickshell failing to launch: running never becomes true
@@ -14,7 +14,7 @@ function service(launch) {
   const queue = [], done = [], killSwitch = [], detached = []
   const s = { Proton, Date, active:true, panelOpen:false, phase:'', installed:true, account:'signed-in',
     nm:{ok:true,at:1,match:'none'}, cli:{ok:true,at:1,state:'disconnected'}, action:'', error:'', message:'',
-    clock:Date.now(), generation:0, countries:[], countriesError:'', cities:{}, citiesError:'',
+    clock:Date.now(), generation:0, countries:[], countriesError:'', cities:{}, citiesError:'', servers:[], serversError:'', serversHelper:'/not/executed/proton_servers.py',
     queue, done, killSwitch, detached,
     Qt:{callLater(f){queue.push(f)}}, launchCheck:{restart(){}},
     Quickshell:{execDetached(argv){detached.push(argv)}},
@@ -69,8 +69,9 @@ assert.equal(typeof service(true).checkLaunches, 'function', 'launch check missi
   assert.deepEqual(s.killSwitch, [''])
 }
 { // Observations and lists become unknown/failed; nothing stays busy.
-  const s = service(false); s.refresh(); s.refreshAccount(); s.loadCountries(true); s.loadCities('CH')
+  const s = service(false); s.refresh(); s.refreshAccount(); s.loadCountries(true); s.loadCities('CH'); s.loadServers(true)
   s.checkLaunches(); s.flush()
+  assert.match(s.serversError, /server list/)
   assert.equal(s.nm.ok, false); assert.equal(s.cli.ok, false); assert.equal(s.cli.state, 'unknown')
   assert.equal(s.account, 'unknown')
   assert.equal(s.countriesError, 'Could not run protonvpn'); assert.equal(s.citiesError, 'Could not run protonvpn')
@@ -83,5 +84,13 @@ assert.equal(typeof service(true).checkLaunches, 'function', 'launch check missi
   assert.deepEqual(s.done, [])
   const k = service(false); k.readKillSwitch(); k.configProcess.revision = -1; k.checkLaunches(); k.flush()
   assert.deepEqual(k.killSwitch, [])
+}
+{ // The server index helper runs with fixed argv, once per session unless forced.
+  const s = service(true); s.loadServers(false)
+  assert.deepEqual(s.serversProcess.command, ['python3', '-B', '/not/executed/proton_servers.py'])
+  s.serversProcess.running = false; s.servers = [{name:'CH#1'}]; s.serversProcess.command = []
+  s.loadServers(false); assert.deepEqual(s.serversProcess.command, [], 'cached for the session')
+  s.loadServers(true); assert.deepEqual(s.serversProcess.command, ['python3', '-B', '/not/executed/proton_servers.py'])
+  const n = service(true); n.installed = false; n.loadServers(true); assert.deepEqual(n.serversProcess.command, [])
 }
 console.log('proton service sign-in command and launch-failure tests passed')

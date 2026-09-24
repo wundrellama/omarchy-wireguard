@@ -26,6 +26,18 @@ Vpn.BarWidget {
     readonly property var protonCountries: [{name: "Switzerland", code: "CH"}, {name: "United States", code: "US"}, {name: "Bosnia and Herzegovina", code: "BA"}]
     readonly property var filteredCountries: protonStatus ? Proton.filterCountries(protonCountries, protonQuery) : []
     readonly property var protonCities: ({CH: [{name: "Zurich", features: ["P2P", "Tor"]}], US: [{name: "New York", features: ["P2P"]}, {name: "São Paulo test city with a long name", features: []}]})
+    // Synthetic server index rows (never read from the real Proton cache).
+    readonly property var protonServers: [
+      {name: "CH#1", country: "CH", city: "Zurich", features: ["p2p"], load: 12, tier: 2},
+      {name: "CH#13-TOR", country: "CH", city: "Zurich", features: ["tor"], load: 40, tier: 2},
+      {name: "US-NY#7", country: "US", city: "New York", features: ["p2p", "streaming"], load: 55, tier: 2},
+      {name: "CH-US#1", country: "US", city: "New York", features: ["securecore"], load: 20, tier: 2}]
+    readonly property var protonResults: protonStatus ? Proton.searchProton(protonQuery, protonCountries, protonCities, protonServers, 30) : []
+    property string protonServersError: ""
+    // Synthetic last connection; lastScenario() switches between history kinds.
+    property var lastConnection: ({version: 1, kind: "wireguard", value: "preview-home", label: "Example home exit"})
+    readonly property var quickAction: Proton.quickAction({wg: status, recovery: false, wgAbsent: false, proton: protonStatus,
+      switching: !!switchRequest, busy: busy, record: lastConnection, locations: status.locations || [], mru: catalog.mru || [], countries: protonCountries})
     property string protonCountriesError: ""
     property string protonCitiesError: ""
     property bool active: false
@@ -103,6 +115,25 @@ Vpn.BarWidget {
     function protonSignIn() { record("proton:sign-in terminal refused in preview") }
     function loadProtonCountries(force) { record("proton:countries" + (force ? " refresh" : "")) }
     function loadProtonCities(code) { record("proton:cities " + code) }
+    function quickConnect() {
+      var action = quickAction
+      if (!action || !action.enabled) return
+      if (action.mode === "disconnect") record(action.vpn === "proton" ? "proton:disconnect" : "disconnect")
+      else if (action.vpn === "wireguard") record("connect:" + action.target.location.id)
+      else record("proton:" + JSON.stringify(Proton.connectArgs(action.target.choice)))
+    }
+    // Kinds: none, wireguard, server, fastest, country, city.
+    function lastScenario(kind) {
+      var records = {
+        none: null,
+        wireguard: {version: 1, kind: "wireguard", value: "preview-home", label: "Example home exit"},
+        server: {version: 1, kind: "server", value: "CH#1", label: "CH#1"},
+        fastest: {version: 1, kind: "fastest", value: "", label: "Fastest"},
+        country: {version: 1, kind: "country", value: "CH", label: "Switzerland"},
+        city: {version: 1, kind: "city", value: "Zurich", label: "Zurich"}
+      }
+      lastConnection = records.hasOwnProperty(kind) ? records[kind] : null
+    }
     function confirmSwitch() { record("switch:" + JSON.stringify(switchRequest)); switchRequest = null }
     function cancelSwitch() { switchRequest = null }
 
@@ -133,6 +164,9 @@ Vpn.BarWidget {
     target: "wundrellama.wireguard-preview-controls"
     function scenario(mode: string): string { fixture.scenario(mode); return "ok" }
     function proton(mode: string): string { fixture.protonScenario(mode); return "ok" }
+    function last(kind: string): string { fixture.lastScenario(kind); return fixture.quickAction.label }
+    function quick(): string { fixture.quickConnect(); return fixture.lastAction }
+    function protonSearch(value: string): string { fixture.protonQuery = value; return JSON.stringify(fixture.protonResults.map(function(r) { return r.kind + ":" + r.label })) }
     function review(): string { fixture.chooseImport(); return "ok" }
     function pickerReturned(): string {
       preview.close()
