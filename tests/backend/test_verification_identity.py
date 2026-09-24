@@ -47,6 +47,22 @@ class VerificationIdentityTests(unittest.TestCase):
                 self.assertFalse(result.checks["profile_interface"])
                 self.assertFalse(result.ok)
 
+    def test_normal_rekey_interval_is_fresh(self):
+        # WireGuard rekeys a healthy session about every 120 seconds.
+        for age in (121, 125, 150, 180):
+            with self.subTest(age=age):
+                result = verification(handshakes=f"peer\t{1000 - age}\n")
+                self.assertTrue(result.checks["handshake_fresh"])
+                self.assertTrue(result.ok)
+
+    def test_handshake_past_reject_after_time_is_stale(self):
+        # After 180 seconds WireGuard itself refuses to use the session keys.
+        for age in (181, 300):
+            with self.subTest(age=age):
+                result = verification(handshakes=f"peer\t{1000 - age}\n")
+                self.assertFalse(result.checks["handshake_fresh"])
+                self.assertFalse(result.ok)
+
     def test_future_handshake_is_not_fresh(self):
         result = verification(handshakes="peer\t1001\n")
         self.assertFalse(result.checks["handshake_fresh"])
