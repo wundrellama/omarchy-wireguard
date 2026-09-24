@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
+import "Proton.js" as Proton
 
 Item {
   id: root
@@ -10,8 +11,30 @@ Item {
   readonly property var traffic: trafficService.traffic
   TrafficService {
     id: trafficService
-    profile: root.active && root.status.state === "connected" ? (root.status.currentProfile || "") : ""
+    profile: root.active ? Proton.trafficProfile(root.status, root.shield) : ""
   }
+  ProtonService {
+    id: protonService
+    active: root.active
+    panelOpen: root.panelOpen
+    phase: root.switchPhase
+  }
+  // Proton adapter: user-session CLI only; nothing here reaches the root backend.
+  readonly property var proton: protonService
+  readonly property var protonStatus: protonService.status
+  readonly property var shield: Proton.shield(status, protonService.status, disconnectRecovery, wireGuardAbsent())
+  property string protonQuery: ""
+  readonly property var filteredCountries: Proton.filterCountries(protonService.countries, protonQuery)
+  readonly property var protonCities: protonService.cities
+  readonly property string protonCountriesError: protonService.countriesError
+  readonly property string protonCitiesError: protonService.citiesError
+  // One transition at a time: {target, choice|location, label} awaiting inline confirmation.
+  property var switchRequest: null
+  property var switchTarget: null
+  property string switchPhase: ""
+  property double switchStartedAt: 0
+  property double wgReleasedAfter: 0
+  property double protonReleasedAfter: 0
   property double lastStatusAt: 0
   property int statusRevision: 0
   property bool disconnectRecovery: false
@@ -28,6 +51,7 @@ Item {
   readonly property var filteredLocations: Model.filterLocations(status.locations || [], query)
   readonly property bool transitioning: status.state === "connecting"
   readonly property bool busy: actionProcess.running || pickerProcess.running || diagnosticsProcess.running || installProcess.running
+    || protonService.busy || switchPhase !== ""
   readonly property int closedRefreshIntervalSec: intSetting("closedRefreshIntervalSec", 30, 15, 300)
   property string previousState: ""
   property bool previousPaused: false
@@ -73,13 +97,182 @@ Item {
     actionMessage = name
     statusRevision++
     markCliUnavailable("Action in progress; awaiting status")
+    actionProcess.startedAt = Date.now()
+    actionProcess.abandoned = false
     actionProcess.command = ["omarchy-wireguard"].concat(args)
     actionProcess.running = true
   }
 
+  // A hung CLI action is abandoned after 120 s (the Proton connect bound) so
+  // it cannot wedge the panel; its late exit, if any, is ignored.
+  function expireAction() {
+    if (!actionProcess.running || Date.now() - actionProcess.startedAt <= 120000) return
+    var action = pendingAction
+    actionProcess.abandoned = true
+    actionProcess.running = false
+    pendingAction = ""
+    actionMessage = ""
+    statusRevision++
+    markCliUnavailable("Action timed out; connection is unknown")
+    if (switchPhase === "wg-disconnect") abortSwitch("WireGuard disconnect timed out; Proton VPN was not started")
+    else actionError = "WireGuard command timed out; status is unknown until the next check"
+    actionFinished(action, false)
+    delayedRefresh.restart()
+  }
+
   function connectLocation(location) {
-    if (!location || !location.id || status.state === "unknown") return
+    if (!location || !location.id || status.state === "unknown" || busy) return
+    var proton = protonService.status || {}
+    if (proton.state === "connected" || proton.state === "connecting" || proton.state === "disconnecting") {
+      switchRequest = { target: "wireguard", location: location, label: location.label || location.city || location.id }
+      return
+    }
+    if (proton.state === "unknown" && proton.installed !== false) {
+      actionError = "Proton VPN status is unknown; wait for it to refresh before connecting WireGuard"
+      return
+    }
     runAction("Connecting", Model.connectArgs(location))
+  }
+
+  // The backend CLI reports this when its socket is absent; no WireGuard intent can exist.
+  function wireGuardAbsent() {
+    return status.state === "unknown" && /not installed or running/.test(lastError) && !disconnectRecovery
+  }
+
+  function connectProton(choice) {
+    if (!active || busy) return
+    if (!Proton.connectArgs(choice)) { actionError = "Invalid Proton VPN selection"; return }
+    if (Proton.wireGuardActive(status, disconnectRecovery)) {
+      switchRequest = { target: "proton", choice: choice, label: Proton.choiceLabel(choice) }
+      return
+    }
+    if (status.state === "unknown" && !wireGuardAbsent()) {
+      actionError = "WireGuard status is unknown; refresh before connecting Proton VPN"
+      return
+    }
+    var protonState = (protonService.status || {}).state
+    if (protonState !== "connected" && protonState !== "disconnected") {
+      actionError = "Proton VPN is " + (protonState || "unknown") + "; wait for its status before connecting"
+      return
+    }
+    actionError = ""
+    if (!protonService.connect(choice)) actionError = "Proton VPN is busy or unavailable"
+  }
+
+  function disconnectProton() {
+    if (!active || busy) return
+    actionError = ""
+    if (!protonService.disconnect()) actionError = "Proton VPN is busy or unavailable"
+  }
+
+  function protonSignIn() { if (active) protonService.signIn() }
+  function loadProtonCountries(force) { if (active) protonService.loadCountries(force === true) }
+  function loadProtonCities(code) { if (active) protonService.loadCities(code) }
+
+  function cancelSwitch() { switchRequest = null }
+
+  function abortSwitch(message) {
+    switchPhase = ""
+    switchTarget = null
+    actionMessage = ""
+    actionError = message
+  }
+
+  // Confirmed switch. WireGuard -> Proton: disconnect WireGuard (removes its
+  // fail-closed firewall), wait for a newer status poll showing disabled,
+  // then connect Proton. Proton -> WireGuard: refuse unless Proton's kill
+  // switch is off, disconnect Proton, wait for Disconnected, then connect.
+  function confirmSwitch() {
+    var request = switchRequest
+    if (!active || !request || busy) return
+    switchRequest = null
+    switchStartedAt = Date.now()
+    actionError = ""
+    switchTarget = request
+    if (request.target === "proton") {
+      runAction("Switching to Proton VPN", ["disconnect"])
+      if (!actionProcess.running) { abortSwitch("Could not start the WireGuard disconnect; Proton VPN was not started"); return }
+      switchPhase = "wg-disconnect"
+      return
+    }
+    switchPhase = "ks-check"
+    actionMessage = "Checking the Proton VPN kill switch"
+    if (!protonService.readKillSwitch()) abortSwitch("Could not read the Proton VPN kill switch setting; WireGuard was not started")
+  }
+
+  function wireGuardActionDone(success) {
+    if (switchPhase !== "wg-disconnect") return
+    if (!success) {
+      abortSwitch("WireGuard disconnect failed; Proton VPN was not started: " + (actionError || "unknown error"))
+      return
+    }
+    wgReleasedAfter = Date.now()
+    switchPhase = "wg-wait"
+    actionMessage = "Waiting for WireGuard to report disabled"
+  }
+
+  function protonKillSwitchRead(value) {
+    if (switchPhase !== "ks-check") return
+    if (value === "off") {
+      switchPhase = "proton-disconnect"
+      actionMessage = "Disconnecting Proton VPN"
+      if (!protonService.disconnect()) abortSwitch("Could not disconnect Proton VPN; WireGuard was not started")
+    } else if (!value) abortSwitch("Could not read the Proton VPN kill switch setting; WireGuard was not started")
+    else abortSwitch("Proton VPN kill switch is " + value + ". Disconnect Proton VPN or set its kill switch to off, then connect WireGuard.")
+  }
+
+  function protonActionDone(name, success, message) {
+    if (switchPhase === "proton-connect" && name === "connect") {
+      switchPhase = ""
+      switchTarget = null
+      actionMessage = ""
+      actionError = success ? "" : "Proton VPN connect failed: " + message
+    } else if (switchPhase === "proton-disconnect" && name === "disconnect") {
+      if (!success) {
+        abortSwitch("Proton VPN disconnect failed; WireGuard was not started: " + message)
+        return
+      }
+      protonReleasedAfter = Date.now()
+      switchPhase = "proton-wait"
+      actionMessage = "Waiting for Proton VPN to report Disconnected"
+      protonService.refresh()
+    }
+  }
+
+  function protonObserved() { if (switchPhase === "proton-wait") Qt.callLater(advanceSwitch) }
+
+  function protonReleased() {
+    var nm = protonService.nm || {}
+    var cli = protonService.cli || {}
+    return nm.ok === true && nm.match === "none" && nm.at > protonReleasedAfter
+      && cli.ok === true && cli.state === "disconnected" && cli.at > protonReleasedAfter
+  }
+
+  function advanceSwitch() {
+    if (!active || !switchTarget) return
+    if (switchPhase === "wg-wait" && Proton.wireGuardReleased(status, lastStatusAt, wgReleasedAfter)) {
+      switchPhase = "proton-connect"
+      actionMessage = "Connecting Proton VPN"
+      if (!protonService.connect(switchTarget.choice)) abortSwitch("Could not start Proton VPN; WireGuard is disconnected")
+    } else if (switchPhase === "proton-wait" && protonReleased()) {
+      var location = switchTarget.location
+      switchPhase = ""
+      switchTarget = null
+      runAction("Connecting", Model.connectArgs(location))
+      if (!actionProcess.running) actionError = "Could not start WireGuard; Proton VPN is disconnected"
+    }
+  }
+
+  // Whole-transition bound, above the 120 s Proton connect timeout. Late
+  // results are discarded because every step checks the current switchPhase.
+  function checkSwitchDeadline() {
+    if (switchPhase !== "" && Date.now() - switchStartedAt > 150000) {
+      switchRequest = null
+      abortSwitch("VPN switch timed out; neither VPN is started automatically. Check status before connecting.")
+    } else if (switchPhase === "wg-wait" && Date.now() - wgReleasedAfter > 30000)
+      abortSwitch("WireGuard did not report disabled; Proton VPN was not started")
+    else if (switchPhase === "proton-wait" && Date.now() - protonReleasedAfter > 30000)
+      abortSwitch("Proton VPN did not report Disconnected; WireGuard was not started")
   }
 
   function disconnect() { if (status.state !== "unknown" || disconnectRecovery) runAction("Disconnecting", ["disconnect"]) }
@@ -207,6 +400,7 @@ Item {
       return
     }
     applyStatus(raw)
+    if (switchPhase === "wg-wait") Qt.callLater(advanceSwitch)
   }
 
   function applyActionOutput(raw) {
@@ -258,7 +452,7 @@ Item {
   Component.onCompleted: refresh()
 
   Timer {
-    interval: (root.panelOpen || root.transitioning ? 1500 : root.closedRefreshIntervalSec * 1000)
+    interval: (root.panelOpen || root.transitioning || root.switchPhase !== "" ? 1500 : root.closedRefreshIntervalSec * 1000)
     repeat: true
     running: root.active
     onTriggered: root.refresh()
@@ -268,7 +462,14 @@ Item {
     interval: 1000
     repeat: true
     running: root.active
-    onTriggered: root.expireStatus()
+    onTriggered: { root.expireStatus(); root.expireAction(); root.checkSwitchDeadline() }
+  }
+
+  Connections {
+    target: protonService
+    function onActionDone(action, success, message) { root.protonActionDone(action, success, message) }
+    function onKillSwitchRead(value) { root.protonKillSwitchRead(value) }
+    function onObserved() { root.protonObserved() }
   }
 
   onActiveChanged: if (!active) {
@@ -281,6 +482,9 @@ Item {
     installProcess.running = false
     delayedRefresh.stop()
     handshakeFailureNotificationDelay.stop()
+    switchRequest = null
+    switchTarget = null
+    switchPhase = ""
   }
 
   Timer {
@@ -354,10 +558,12 @@ Item {
 
   Process {
     id: actionProcess
+    property double startedAt: 0
+    property bool abandoned: false
     stdout: StdioCollector { id: actionStdout; waitForEnd: true }
     stderr: StdioCollector { id: actionStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (!root.active) return
+      if (!root.active || abandoned) return
       var action = root.pendingAction
       root.pendingAction = ""
       root.actionMessage = ""
@@ -370,6 +576,7 @@ Item {
         root.applyActionOutput(actionStdout.text)
       }
       root.actionFinished(action, exitCode === 0)
+      root.wireGuardActionDone(exitCode === 0)
       delayedRefresh.restart()
     }
   }

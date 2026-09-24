@@ -4,7 +4,7 @@ A WireGuard integration for Omarchy 4.x.
 
 Maintained by **wundrellama**, based on Nicolas Dorier's original omarchy-wireguard. The original MIT copyright and license are retained in [LICENSE](LICENSE).
 
-> **Development fork.** This plugin supports named full-tunnel WireGuard profiles. It does not support private-network split tunnels or Proton integration. Keep your existing VPN plugins until you test the replacement. See the [roadmap and deployment limits](docs/ADAPTATION.md). The [panel preview](tests/preview/README.md) uses synthetic profiles and does not change networking.
+> **Development fork.** This plugin supports named full-tunnel WireGuard profiles. It does not support private-network split tunnels. Proton VPN support is a first version; see [Proton VPN](docs/PROTON.md). Keep your existing VPN plugins until you test the replacement. See the [roadmap and deployment limits](docs/ADAPTATION.md). The [panel preview](tests/preview/README.md) uses synthetic profiles and does not change networking.
 
 ## Panel and status shield
 
@@ -14,8 +14,10 @@ The bar shows a shield. Click the shield to open the profile panel.
 | --- | --- |
 | Green check-shield | Connected. The backend checks pass. |
 | Amber shield | Connecting. |
-| Red shield | Failed or unverified. |
+| Red shield | Failed or unverified, a Proton VPN error, or a conflict: WireGuard and Proton VPN both report active. |
 | Muted shield | Disabled, paused, or unknown. Read the panel for the exact state. |
+
+The shield shows the active VPN: WireGuard or Proton VPN. The tooltip names the active VPN and its server.
 
 The backend checks the tunnel interface, firewall policy, default route, Domain Name System (DNS) configuration, IPv6 policy, and recent WireGuard handshake. Missing, stale, or contradictory status appears as unknown. A green icon reports these checks, not proof of every possible traffic path.
 
@@ -28,6 +30,16 @@ The panel supports these actions:
 - Retry a failed connection or copy diagnostics.
 
 Imports add profiles without replacing existing profiles. The file chooser returns to the panel for label review when required. The panel does not offer timed pause.
+
+## Proton VPN
+
+The panel has a Proton VPN section. It uses the official `protonvpn` command in your user session. The plugin does not read or store your Proton password.
+
+- Sign in: the panel opens Proton's own sign-in prompt in a terminal.
+- Connect: Fastest, Random, Fastest P2P, Secure Core, Tor, a country, a city, or a server name such as `IT#23`.
+- Disconnect, and show the server, location, load, protocol, and traffic.
+
+To change from one VPN to the other, select the new connection and confirm the switch in the panel. The panel disconnects the active VPN first. During the switch, traffic uses your regular connection for a few seconds, and possibly up to about a minute. If the Proton kill switch is not `off`, the panel does not switch to WireGuard. See [Proton VPN](docs/PROTON.md).
 
 ## Traffic display
 

@@ -4,9 +4,11 @@ const vm = require('node:vm')
 const path = require('node:path')
 const source = fs.readFileSync(path.join(__dirname,'../../plugin/Service.qml'),'utf8')
 const Model = {}; vm.createContext(Model); vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugin/Model.js'),'utf8'), Model)
+const Proton = {}; vm.createContext(Proton); vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugin/Proton.js'),'utf8'), Proton)
 // Exercise production function bodies; QML runtime imports are tested separately.
 function service() {
-  const s = { Model, Date, active:false, status:Model.unknownStatus(), catalog:{locations:[]},
+  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null,
+    Qt:{callLater(){}}, protonService:{status:{state:'absent',installed:false}}, status:Model.unknownStatus(), catalog:{locations:[]},
     disconnectRecovery:false, lastStatusAt:0, closedRefreshIntervalSec:30, busy:false, panelOpen:false,
     lastError:'', actionError:'', pendingAction:'', actionMessage:'', refreshing:false,
     sawFirstStatus:false, previousState:'', previousPaused:false, failureNotificationShown:false,

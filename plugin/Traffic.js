@@ -15,8 +15,10 @@ function summary(value) {
 function accept(previous, raw, profile) {
   var value
   try { value = JSON.parse(raw) } catch (error) { return null }
+  // "@proton" is the exact Proton mode of traffic.py; it maps only proton0.
+  var interfacePattern = profile === "@proton" ? /^proton0$/ : /^owg-[a-zA-Z0-9_-]+$/
   if (!profile || !value || value.ok !== true || value.profile !== profile
-      || typeof value.uuid !== "string" || !value.uuid || !/^owg-[a-zA-Z0-9_-]+$/.test(value.interface || "")) return null
+      || typeof value.uuid !== "string" || !value.uuid || !interfacePattern.test(value.interface || "")) return null
   for (var i = 0, keys = ["rx", "tx", "time", "ifindex"]; i < keys.length; i++) {
     var n = value[keys[i]]
     if (typeof n !== "number" || !isFinite(n) || n < 0 || n > 9007199254740991) return null

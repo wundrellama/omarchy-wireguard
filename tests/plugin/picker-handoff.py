@@ -10,7 +10,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix="wg-picker-", dir=os.environ["TMPDIR"]) as directory:
     stage = Path(directory)
-    for name in ("Service.qml", "Model.js", "TrafficService.qml", "Traffic.js", "traffic.py"):
+    for name in ("Service.qml", "Model.js", "Proton.js", "ProtonService.qml", "TrafficService.qml", "Traffic.js", "traffic.py"):
         shutil.copy2(ROOT / "plugin" / name, stage / name)
     commands = stage / "bin"
     commands.mkdir()
@@ -34,6 +34,11 @@ else:
     notify = commands / "omarchy-notification-send"
     notify.write_text('#!/bin/bash\nexit 0\n')
     notify.chmod(0o755)
+    # Inert Proton adapter inputs: the real protonvpn/nmcli in /usr/bin never run.
+    for tool, body in (("protonvpn", '#!/bin/bash\n[ "$1" = status ] && echo "Status: Disconnected"\n[ "$1" = info ] && echo "Account: \'None\'"\nexit 0\n'),
+                       ("nmcli", "#!/bin/bash\nexit 0\n")):
+        (commands / tool).write_text(body)
+        (commands / tool).chmod(0o755)
     (stage / "shell.qml").write_text('''import QtQuick
 import Quickshell
 ShellRoot {
