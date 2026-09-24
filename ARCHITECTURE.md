@@ -326,7 +326,7 @@ all of these checks:
 | `ipv4_default` | A route probe to `1.1.1.1` selects the tunnel |
 | `ipv6_tunneled_or_blocked` | The IPv6 probe selects the tunnel, or the verified firewall blocks fallback |
 | `split_dns` | Tunnel DNS has `~.`, while expected physical DNS and `~lan` remain present |
-| `handshake_fresh` | WireGuard reports a nonzero handshake no more than 90 seconds old |
+| `handshake_fresh` | WireGuard reports a nonzero handshake no more than 180 seconds old (WireGuard's key-rejection limit; healthy sessions rekey about every 120 seconds) |
 
 The checks validate local routing and policy state. They do not call an external
 public-IP or DNS-leak service. Firewall verification checks key invariants, not

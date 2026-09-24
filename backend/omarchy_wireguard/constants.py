@@ -11,7 +11,9 @@ MAX_REQUEST = 256 * 1024
 MAX_RESPONSE = 256 * 1024
 REQUEST_TIMEOUT = 3.0
 CITY_BUDGET = 20.0
-STALE_HANDSHAKE = 90
+# WireGuard rekeys about every 120 s and rejects session keys after 180 s
+# (REJECT_AFTER_TIME). A lower limit tears down healthy tunnels at each rekey.
+STALE_HANDSHAKE = 180
 PAUSE_SECONDS = 600
 MAX_RETRY = 300
 MAX_ARCHIVE = 16 * 1024 * 1024
