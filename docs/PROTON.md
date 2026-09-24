@@ -58,6 +58,23 @@ Proton VPN to WireGuard:
 
 Each switch has a limit of 150 seconds. After this limit, the panel stops the switch and shows an error. A late result from a stopped switch does not start a VPN. Each `omarchy-wireguard` command has a limit of 120 seconds.
 
+## Troubleshooting
+
+If a Proton connect fails, look in the NetworkManager journal:
+
+```bash
+journalctl -u NetworkManager --since -10min | grep -i proton
+```
+
+The message `Activation failed because the device is unmanaged` means that a local NetworkManager rule ignores WireGuard devices. The plugin does not install this rule. Add an exception for `proton0` to the `unmanaged-devices` setting, for example:
+
+```ini
+[keyfile]
+unmanaged-devices=type:wireguard;except:interface-name:owg-*;except:interface-name:proton0
+```
+
+Then reload NetworkManager with `sudo systemctl reload NetworkManager`. A reload does not stop your active connections.
+
 ## Limits
 
 - The first version does not coordinate the Proton kill switch with the WireGuard firewall. It does not change Proton settings.
