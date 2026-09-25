@@ -12,14 +12,16 @@ The bar shows a shield. Click the shield to open the profile panel.
 
 | Icon | State |
 | --- | --- |
-| Green check-shield | Connected. The backend checks pass. |
+| Green check-shield | Connected. The checks for the active VPN pass. |
 | Amber shield | Connecting. |
 | Red shield | Failed or unverified, a Proton VPN error, or a conflict: WireGuard and Proton VPN both report active. |
 | Muted shield | Disabled, paused, or unknown. Read the panel for the exact state. |
 
 The shield shows the active VPN: WireGuard or Proton VPN. The tooltip names the active VPN and its server, and warns when the connection is operational but protection has not yet been verified.
 
-The backend checks the tunnel interface, firewall policy, default route, Domain Name System (DNS) configuration, IPv6 policy, and recent WireGuard handshake. Missing, stale, or contradictory status appears as unknown. A green icon reports these checks, not proof of every possible traffic path.
+For WireGuard, the backend checks the tunnel interface, firewall policy, default route, Domain Name System (DNS), IPv6 policy, and recent handshake. Missing, stale, or contradictory WireGuard status appears as unknown.
+
+For Proton VPN, the plugin compares fresh NetworkManager and Proton CLI reports. An operational connection stays red until the reports match and NetworkManager confirms that WireGuard is absent. A green icon reports these local checks. It does not prove every possible traffic path.
 
 The panel supports these actions:
 
@@ -42,7 +44,7 @@ The panel has a Proton VPN section. It uses the official `protonvpn` command in 
 - Search: one field finds countries, cities, and servers (for example `US-CA#3`, `los angeles`, or `tor`) while you type.
 - Disconnect, and show the server, location, load, protocol, and traffic.
 
-To change from one VPN to the other, select the new connection and confirm the switch in the panel. The panel disconnects the active VPN first. During the switch, traffic uses your regular connection for a few seconds, and possibly up to about a minute. If the Proton kill switch is not `off`, the panel does not switch to WireGuard. See [Proton VPN](docs/PROTON.md).
+To change from one VPN to the other, select the new connection and confirm the switch. The panel disconnects the active VPN first. During the switch, traffic uses your regular connection. A complete switch can take up to 150 seconds. If the Proton kill switch is not `off`, the panel does not switch to WireGuard. See [Proton VPN](docs/PROTON.md).
 
 ## Traffic display
 
@@ -66,14 +68,16 @@ omarchy plugin add https://github.com/wundrellama/omarchy-wireguard.git --enable
 ```
 
 1. Click the bar shield.
-2. Choose **Install backend** or **Install / repair backend** when status is unknown.
-3. Authorize the Polkit prompt.
+2. If the backend is not installed, choose **Install backend**.
+3. If the status is unknown, choose **Install / repair backend**.
+4. If the panel shows **Setup required**, choose **Repair backend**.
+5. Authorize the Polkit prompt.
 
 The installer adds `wireguard-tools`, a root service, and a dedicated nftables kill-switch table. It does not change Uncomplicated Firewall (UFW) rules.
 
-Import compatible `.conf` files, a directory, or a ZIP; the development panel displays each named profile, with optional geography. **Open TorGuard generator** is an optional convenience for TorGuard customers and opens that provider's public generator.
+Import compatible `.conf` files, a directory, or a ZIP. The panel shows each named profile with optional location data. **Open TorGuard generator** opens that provider's public generator for TorGuard customers.
 
-Installation requires an explicit user action. An unavailable status response never starts installation automatically. An unreachable backend appears as unknown, not as proof that VPN protection is disabled. Profiles need display labels, not city names.
+Installation requires an explicit user action. An unavailable status response never starts installation automatically. An unreachable backend appears as unknown, not as proof that VPN protection is disabled. An ambiguous profile needs a display label before import.
 
 Accepted profiles must contain exactly one `Interface` followed by one `Peer`,
 include DNS and the IPv4 default route in `AllowedIPs`, use only the supported
@@ -114,7 +118,7 @@ For a directory or ZIP, `--labels '{"personal.conf":"Personal exit"}'` maps exac
 
 Imports add to the catalog; they never replace old profiles. Duplicate source names are rejected, and duplicate basenames in a multi-file CLI import must be renamed explicitly. Profile replacement, update and removal are not implemented in this slice. Existing connections and IDs survive an import. CLI imports no longer discover `alfred-vpn` or overwrite saved network policy.
 
-The panel lists named profiles without requiring geography, searches labels/source names/locations, and connects the exact selected ID. Ambiguous imports request display labels and add profiles without replacing existing ones. Missing, stale or contradictory status is shown as unknown rather than protected or disconnected. Timed pause and private/split tunnels remain unsupported. Proton VPN is supported when its official CLI is installed; the panel coordinates transitions but does not enable Proton's kill switch automatically.
+The panel lists named profiles without requiring location data. It searches labels, source names, cities, and countries. It connects the exact selected ID. Ambiguous imports request display labels and add profiles without replacing existing profiles. Missing, stale, or contradictory WireGuard status appears as unknown. An operational Proton connection with incomplete evidence appears as unverified. Timed pause and private or split tunnels remain unsupported. The panel supports Proton VPN when its official CLI is installed. It coordinates VPN transitions but does not enable the Proton kill switch.
 
 If a backend failure leaves traffic blocked:
 
@@ -129,8 +133,7 @@ sudo /usr/lib/omarchy-wireguard/uninstall-backend "$USER"
 omarchy plugin remove wundrellama.wireguard
 ```
 
-This removes plugin-owned profiles, services, firewall state, and menu
-integration. It does not modify unrelated VPNs such as `alfred-vpn`.
+The uninstaller removes profiles that the plugin catalog owns. It also removes the services, firewall state, and menu integration. It leaves uncataloged profiles unchanged. If an uncataloged managed profile is active, the uninstaller stops and keeps the firewall for manual recovery. It does not modify unrelated VPNs such as `alfred-vpn`.
 
 ## Security
 

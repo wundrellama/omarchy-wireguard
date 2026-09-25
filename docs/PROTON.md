@@ -85,7 +85,7 @@ The traffic sampler has a separate Proton mode. It reads only the `proton0` coun
 
 ## Switching between VPNs
 
-The panel runs one VPN at a time. It does not start two connections at the same time. When you select an option for the other VPN, the panel asks you to confirm. During the switch, **traffic uses your regular connection** for a few seconds, and possibly up to about a minute.
+The panel runs one VPN at a time. It does not start two connections at the same time. When you select an option for the other VPN, the panel asks you to confirm. During the switch, **traffic uses your regular connection**. A complete switch can take up to 150 seconds.
 
 WireGuard to Proton VPN:
 
