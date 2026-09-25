@@ -1,5 +1,7 @@
 #!/usr/bin/python3
+import array
 import argparse
+import base64
 import json
 import os
 import re
@@ -16,13 +18,18 @@ from pathlib import Path
 SOCKET_PATH = "/run/omarchy-wireguard/control.sock"
 MAX_RESPONSE = 512 * 1024
 PROFILE_PREFIX = "omarchy-wireguard-"
+MAX_ARCHIVE = 16 * 1024 * 1024
+MAX_MEMBER = 512 * 1024
+MAX_FILES = 512
+MAX_TRAVERSAL = 1024
+MAX_INLINE_SOURCE = 180 * 1024
 
 
 class CliError(RuntimeError):
     pass
 
 
-def call(operation, arguments=None):
+def call(operation, arguments=None, *, source_fd=None):
     request = {
         "op": operation,
         "args": arguments or {},
@@ -33,7 +40,17 @@ def call(operation, arguments=None):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(30)
             client.connect(SOCKET_PATH)
-            client.sendall(payload)
+            if source_fd is None:
+                client.sendall(payload)
+            else:
+                sent = client.sendmsg(
+                    [payload],
+                    [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [source_fd]))],
+                )
+                if sent <= 0:
+                    raise CliError("could not send import source")
+                if sent < len(payload):
+                    client.sendall(payload[sent:])
             client.shutdown(socket.SHUT_WR)
             chunks = []
             size = 0
@@ -59,31 +76,134 @@ def call(operation, arguments=None):
     return response
 
 
-def stage_files(paths):
+def _runtime_directory():
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, staged = tempfile.mkstemp(prefix="omarchy-wireguard-", suffix=".zip", dir=runtime)
-    os.fchmod(fd, 0o600)
-    os.close(fd)
+    os.chmod(runtime, 0o700)
+    return runtime
+
+
+def _open_source(path):
     try:
-        with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            seen = set()
-            for value in paths:
-                path = Path(value)
-                info = path.lstat()
-                if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
-                    raise CliError("multiple imports must be regular configuration files")
-                if info.st_uid != os.getuid() or not path.name.lower().endswith(".conf"):
-                    raise CliError("configuration files must be owned by the current user and end in .conf")
-                name = path.name
-                if name in seen:
-                    raise CliError("duplicate source filename; rename the input files explicitly")
-                seen.add(name)
-                archive.write(path, name)
-        return staged
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise CliError("import source could not be opened safely") from exc
+    try:
+        info = os.fstat(descriptor)
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise CliError("import sources must be owned by the current user and not group/world writable")
+        return descriptor, info
     except Exception:
-        Path(staged).unlink(missing_ok=True)
+        os.close(descriptor)
         raise
+
+
+def _read_regular(descriptor, info):
+    if not stat.S_ISREG(info.st_mode):
+        raise CliError("import source must be a regular file")
+    if info.st_size > MAX_MEMBER:
+        raise CliError("configuration file is too large")
+    data = os.pread(descriptor, MAX_MEMBER + 1, 0)
+    if len(data) > MAX_MEMBER:
+        raise CliError("configuration file is too large")
+    return data
+
+
+def _stage_directory(root_fd, archive):
+    count = 0
+    profiles = 0
+    total = 0
+
+    def walk(directory_fd, prefix, depth):
+        nonlocal count, profiles, total
+        if depth > 8:
+            raise CliError("directory nesting is too deep")
+        names = []
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_TRAVERSAL:
+                    raise CliError("directory has too many entries")
+                names.append(entry.name)
+        for name in sorted(names):
+            relative = f"{prefix}/{name}" if prefix else name
+            try:
+                child = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=directory_fd)
+            except OSError as exc:
+                raise CliError("directory contains an unsafe entry") from exc
+            try:
+                info = os.fstat(child)
+                if stat.S_ISDIR(info.st_mode):
+                    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                        raise CliError("nested directory has unsafe ownership or permissions")
+                    walk(child, relative, depth + 1)
+                elif stat.S_ISREG(info.st_mode) and name.lower().endswith(".conf"):
+                    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                        raise CliError("configuration has unsafe ownership or permissions")
+                    data = _read_regular(child, info)
+                    profiles += 1
+                    if profiles > MAX_FILES:
+                        raise CliError("too many configuration files")
+                    total += len(data)
+                    if total > MAX_ARCHIVE:
+                        raise CliError("directory payload is too large")
+                    archive.writestr(relative, data)
+                elif not stat.S_ISREG(info.st_mode):
+                    raise CliError("directory contains a special file")
+            finally:
+                os.close(child)
+
+    walk(root_fd, "", 0)
+    if not profiles:
+        raise CliError("no WireGuard configurations found")
+
+
+def stage_files(paths):
+    descriptors = []
+    try:
+        if len(paths) == 1:
+            path = Path(paths[0])
+            descriptor, info = _open_source(path)
+            descriptors.append(descriptor)
+            if stat.S_ISREG(info.st_mode):
+                if not path.name.lower().endswith((".conf", ".zip")):
+                    raise CliError("import source must end in .conf or .zip")
+                if info.st_size > MAX_ARCHIVE:
+                    raise CliError("import source is too large")
+                return os.fdopen(descriptors.pop(), "rb"), path.name
+            if not stat.S_ISDIR(info.st_mode):
+                raise CliError("import source must be a regular file or directory")
+        staged = tempfile.TemporaryFile(mode="w+b", dir=_runtime_directory())
+        try:
+            with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                if len(paths) == 1:
+                    _stage_directory(descriptors[0], archive)
+                else:
+                    seen = set()
+                    total = 0
+                    for value in paths:
+                        path = Path(value)
+                        descriptor, info = _open_source(path)
+                        descriptors.append(descriptor)
+                        if not stat.S_ISREG(info.st_mode) or not path.name.lower().endswith(".conf"):
+                            raise CliError("multiple imports must be regular configuration files")
+                        if path.name in seen:
+                            raise CliError("duplicate source filename; rename the input files explicitly")
+                        seen.add(path.name)
+                        data = _read_regular(descriptor, info)
+                        total += len(data)
+                        if total > MAX_ARCHIVE:
+                            raise CliError("import payload is too large")
+                        archive.writestr(path.name, data)
+            staged.seek(0)
+            return staged, "upload.zip"
+        except Exception:
+            staged.close()
+            raise
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
 
 
 def import_profiles(paths, locations, label=None, labels=None):
@@ -99,20 +219,126 @@ def import_profiles(paths, locations, label=None, labels=None):
             if not isinstance(parsed, dict):
                 raise CliError(f"--{option} must be a JSON object")
             metadata[option] = parsed
-    staged = None
+    source = None
     try:
-        path = paths[0]
-        if len(paths) > 1:
-            staged = stage_files(paths)
-            path = staged
-        arguments = {"path": str(Path(path).expanduser().absolute())}
+        expanded = [str(Path(path).expanduser().absolute()) for path in paths]
+        source, source_name = stage_files(expanded)
+        source_size = os.fstat(source.fileno()).st_size
+        if source_size <= MAX_INLINE_SOURCE:
+            arguments = {
+                "data": base64.b64encode(os.pread(source.fileno(), source_size + 1, 0)).decode("ascii"),
+                "name": source_name,
+            }
+        else:
+            arguments = {"source": "fd", "name": source_name}
         if label is not None:
-            arguments["labels"] = {Path(path).name: label}
+            arguments["labels"] = {Path(expanded[0]).name: label}
         arguments.update(metadata)
-        return call("import", arguments)
+        return call("import", arguments, source_fd=None if "data" in arguments else source.fileno())
     finally:
-        if staged:
-            Path(staged).unlink(missing_ok=True)
+        if source is not None:
+            source.close()
+
+
+def load_owned_profiles(state_dir=Path("/var/lib/omarchy-wireguard"), owner_uid=0):
+    directory_fd = -1
+    file_fd = -1
+    try:
+        try:
+            directory_fd = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return ()
+        directory = os.fstat(directory_fd)
+        if directory.st_uid != owner_uid or directory.st_mode & 0o077:
+            raise CliError("unsafe WireGuard state directory")
+        try:
+            file_fd = os.open("profiles.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                              dir_fd=directory_fd)
+        except FileNotFoundError:
+            return ()
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid or info.st_mode & 0o077:
+            raise CliError("unsafe WireGuard profile catalog")
+        if info.st_size > MAX_ARCHIVE:
+            raise CliError("WireGuard profile catalog is too large")
+        raw = os.read(file_fd, MAX_ARCHIVE + 1)
+        if len(raw) > MAX_ARCHIVE:
+            raise CliError("WireGuard profile catalog is too large")
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise CliError("invalid WireGuard profile catalog") from exc
+        if not isinstance(value, list):
+            raise CliError("invalid WireGuard profile catalog")
+        records = []
+        identifiers = set()
+        uuids = set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise CliError("invalid WireGuard profile catalog")
+            identifier, connection_uuid = item.get("id"), item.get("uuid")
+            if (not isinstance(identifier, str) or
+                    not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", identifier)):
+                raise CliError("invalid WireGuard profile catalog identity")
+            try:
+                canonical_uuid = str(uuid.UUID(connection_uuid))
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise CliError("invalid WireGuard profile catalog identity") from exc
+            if canonical_uuid != connection_uuid.lower() or identifier in identifiers or canonical_uuid in uuids:
+                raise CliError("duplicate or noncanonical WireGuard profile catalog identity")
+            identifiers.add(identifier)
+            uuids.add(canonical_uuid)
+            records.append((canonical_uuid, PROFILE_PREFIX + identifier))
+        return tuple(records)
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if directory_fd >= 0:
+            os.close(directory_fd)
+
+
+def _catalog_network_state(records):
+    listed = subprocess.run(["nmcli", "-t", "-f", "UUID", "connection", "show"],
+                            text=True, capture_output=True, check=True)
+    present = set(listed.stdout.splitlines())
+    existing = []
+    for connection_uuid, expected_name in records:
+        if connection_uuid not in present:
+            continue
+        observed = subprocess.run(
+            ["nmcli", "--escape", "no", "-g", "connection.id,connection.uuid,connection.type",
+             "connection", "show", "uuid", connection_uuid],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip().splitlines()
+        if observed != [expected_name, connection_uuid, "wireguard"]:
+            raise CliError("managed NetworkManager profile identity mismatch")
+        existing.append(connection_uuid)
+    active = subprocess.run(["nmcli", "-t", "-f", "UUID", "connection", "show", "--active"],
+                            text=True, capture_output=True, check=True)
+    active_owned = sorted(set(active.stdout.splitlines()) & set(existing))
+    owned = {connection_uuid for connection_uuid, _name in records}
+    all_profiles = subprocess.run(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"],
+                                  text=True, capture_output=True, check=True)
+    orphans = []
+    for line in all_profiles.stdout.splitlines():
+        fields = line.rsplit(":", 2)
+        if len(fields) == 3 and fields[0].startswith(PROFILE_PREFIX) and fields[1] not in owned:
+            orphans.append(fields[1])
+    orphan_values = sorted(set(orphans))
+    active_orphans = sorted(set(active.stdout.splitlines()) & set(orphan_values))
+    return sorted(existing), active_owned, orphan_values, active_orphans
+
+
+def uninstall_profiles():
+    if os.geteuid() != 0:
+        raise CliError("uninstall-profiles must be run with sudo")
+    records = load_owned_profiles(owner_uid=0)
+    existing, _active, orphans, active_orphans = _catalog_network_state(records)
+    if active_orphans:
+        raise CliError("active uncataloged managed profiles require manual reconciliation")
+    for connection_uuid in existing:
+        subprocess.run(["nmcli", "connection", "delete", "uuid", connection_uuid], check=True)
+    return {"deleted": existing, "retained_orphans": orphans}
 
 
 def emergency_disable():
@@ -144,14 +370,15 @@ def emergency_disable():
     # Keep the early-firewall unit active: NetworkManager requires it, so stopping it
     # would also stop NetworkManager.
     subprocess.run(["systemctl", "disable", "--now", "omarchy-wireguard.service"], check=True)
-    active = subprocess.run(
-        ["nmcli", "-t", "-f", "NAME,UUID", "connection", "show", "--active"],
-        text=True, capture_output=True, check=False,
-    )
-    for line in active.stdout.splitlines():
-        name, separator, connection_uuid = line.rpartition(":")
-        if separator and name.startswith(PROFILE_PREFIX):
-            subprocess.run(["nmcli", "connection", "down", "uuid", connection_uuid], check=True)
+    try:
+        records = load_owned_profiles(state_dir, owner_uid=0)
+        _existing, active_owned, retained_orphans, active_orphans = _catalog_network_state(records)
+    except (CliError, OSError, subprocess.SubprocessError) as exc:
+        raise CliError("controller stopped; profile ownership unavailable; firewall retained") from exc
+    if active_orphans:
+        raise CliError("controller stopped; active uncataloged profiles require reconciliation; firewall retained")
+    for connection_uuid in active_owned:
+        subprocess.run(["nmcli", "connection", "down", "uuid", connection_uuid], check=True)
     dns_restore_failed = dns_state_error
     links = subprocess.run(["ip", "-json", "link", "show"], text=True,
                            capture_output=True, check=False)
@@ -180,10 +407,10 @@ def emergency_disable():
                       check=False).returncode == 0:
         raise CliError("could not stop omarchy-wireguard.service")
     remaining = subprocess.run(
-        ["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"],
+        ["nmcli", "-t", "-f", "UUID", "connection", "show", "--active"],
         text=True, capture_output=True, check=True,
     )
-    if any(line.startswith(PROFILE_PREFIX) for line in remaining.stdout.splitlines()):
+    if set(remaining.stdout.splitlines()) & {connection_uuid for connection_uuid, _name in records}:
         raise CliError("a managed WireGuard connection is still active")
     if dns_restore_failed:
         raise CliError("physical DNS settings could not be restored; traffic remains blocked")
@@ -227,13 +454,15 @@ def emergency_disable():
         raise CliError("could not verify WireGuard firewall removal") from None
     if ("inet", "omarchy_wireguard") in tables:
         raise CliError("the WireGuard firewall table is still active")
-    return {"ok": True, "result": {"mode": "disabled", "emergency": True}}
+    return {"ok": True, "result": {"mode": "disabled", "emergency": True,
+                                     "retained_orphans": retained_orphans}}
 
 
 def parser():
     root = argparse.ArgumentParser(prog="omarchy-wireguard")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("status", "list", "disconnect", "retry", "diagnostics", "emergency-disable"):
+    for name in ("status", "list", "disconnect", "retry", "diagnostics", "emergency-disable",
+                 "uninstall-profiles"):
         commands.add_parser(name)
     connect = commands.add_parser("connect")
     target = connect.add_mutually_exclusive_group(required=True)
@@ -262,8 +491,10 @@ def main():
             response = call("pause", {"seconds": arguments.seconds})
         elif arguments.command == "import":
             response = import_profiles(arguments.paths, arguments.locations, arguments.label, arguments.labels)
-        else:
+        elif arguments.command == "emergency-disable":
             response = emergency_disable()
+        else:
+            response = {"ok": True, "result": uninstall_profiles()}
         print(json.dumps(response, separators=(",", ":"), sort_keys=True))
     except (CliError, OSError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)

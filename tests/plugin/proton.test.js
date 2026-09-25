@@ -57,7 +57,9 @@ const outdated = 'Server list is outdated, updating... This may take a moment.\n
 }
 {
   const ok = 'ProtonVPN CH#12:4bd6ef4f-ca1a-4756-b9d2-55678bee6008:wireguard:proton0:activated\nWi-Fi:1bd6ef4f-ca1a-4756-b9d2-55678bee6008:802-11-wireless:wlan0:activated\n'
-  assert.deepEqual(plain(P.parseActive(ok)), {ok:true,match:'one',server:'CH#12',activated:true})
+  assert.deepEqual(plain(P.parseActive(ok)), {ok:true,match:'one',server:'CH#12',uuid:'4bd6ef4f-ca1a-4756-b9d2-55678bee6008',activated:true,wireGuard:'absent'})
+  assert.equal(P.parseActive(ok + 'omarchy-wireguard-home:2bd6ef4f-ca1a-4756-b9d2-55678bee6008:wireguard:owg-home:activated\n').wireGuard, 'present')
+  assert.equal(P.parseActive(ok + 'omarchy-wireguard-broken:short\n').wireGuard, 'unknown')
   assert.equal(P.parseActive(ok.replace(':activated\nWi', ':activating\nWi')).activated, false)
   assert.equal(P.parseActive('Wi-Fi:x:802-11-wireless:wlan0:activated\n').match, 'none')
   assert.equal(P.parseActive('').match, 'none')
@@ -103,13 +105,13 @@ const outdated = 'Server list is outdated, updating... This may take a moment.\n
 }
 {
   const wg = (state, enabled) => ({state, enabled})
-  const p = (state, extra={}) => Object.assign({state, phase:'', error:'', server:'CH#12', location:'Zurich, Switzerland'}, extra)
+  const p = (state, extra={}) => Object.assign({state, phase:'', error:'', server:'CH#12', location:'Zurich, Switzerland', protection:'unverified'}, extra)
   const shield = (...a) => plain(P.shield(...a))
   // Fixtures without Proton keep the existing WireGuard mapping unchanged.
   for (const state of ['connected','connecting','failed','enabled-unverified','disabled','unknown','paused'])
     assert.equal(P.shield(wg(state, state !== 'disabled'), undefined, false).state, state)
   assert.equal(P.shield(wg('connected', true), null, false).vpn, 'WireGuard')
-  assert.deepEqual(shield(wg('disabled', false), p('connected'), false), {state:'connected',vpn:'Proton',label:'Proton VPN connected'})
+  assert.deepEqual(shield(wg('disabled', false), p('connected'), false), {state:'enabled-unverified',vpn:'Proton',label:'Proton VPN connected; protection not verified'})
   assert.equal(P.shield(wg('disabled', false), p('connecting'), false).state, 'connecting')
   assert.equal(P.shield(wg('disabled', false), p('disconnecting'), false).state, 'connecting')
   assert.equal(P.shield(wg('disabled', false), p('disconnected', {error:'Connection failed.'}), false).state, 'failed')
@@ -125,11 +127,12 @@ const outdated = 'Server list is outdated, updating... This may take a moment.\n
   assert.equal(P.shield(wg('connected', true), p('connected'), false).state, 'conflict')
   assert.equal(P.shield(wg('failed', true), p('connected'), false).state, 'conflict')
   assert.equal(P.shield(wg('unknown', null), p('connected'), true).state, 'conflict')
-  // Unknown never renders green: Proton is green only when WireGuard is known
-  // disabled or known absent (backend not installed); otherwise muted unknown.
-  assert.deepEqual(shield(wg('unknown', null), p('connected'), false), {state:'unknown',vpn:'',label:'WireGuard status unknown; Proton VPN connected'})
-  assert.equal(P.shield(wg('unknown', null), p('connected'), false, false).state, 'unknown')
-  assert.deepEqual(shield(wg('unknown', null), p('connected'), false, true), {state:'connected',vpn:'Proton',label:'Proton VPN connected'})
+  assert.equal(P.shield(wg('disabled', false), p('connected'), true).state, 'conflict', 'fresh NM presence overrides stale disabled backend state')
+  // Unknown never renders green: an operational Proton tunnel is red until
+  // both Proton and fresh NetworkManager WireGuard-absence checks pass.
+  assert.deepEqual(shield(wg('unknown', null), p('connected'), false), {state:'enabled-unverified',vpn:'Proton',label:'Proton VPN connected; protection not verified'})
+  assert.equal(P.shield(wg('unknown', null), p('connected'), false, false).state, 'enabled-unverified')
+  assert.deepEqual(shield(wg('unknown', null), p('connected', {protection:'verified'}), false, true), {state:'connected',vpn:'Proton',label:'Proton VPN connected'})
   assert.equal(P.shield(wg('unknown', null), p('connected'), true, true).state, 'conflict', 'recovery still wins over absent')
   assert.equal(P.shield(wg('unknown', null), p('connecting'), false).state, 'connecting')
   // A switch in progress is amber through the unprotected moment.
@@ -155,10 +158,14 @@ const outdated = 'Server list is outdated, updating... This may take a moment.\n
 {
   const s = (overrides={}) => Object.assign({installed:true, action:'', nm:{ok:true,at:1000,match:'none',server:'',activated:false}, cli:{ok:true,at:1000,state:'disconnected'}, now:2000}, overrides)
   assert.equal(P.deriveState(s({installed:false})), 'absent')
+  assert.equal(P.deriveState(s({installed:false,nm:{ok:true,at:1000,match:'one',server:'CH#12',activated:true}})), 'connected')
+  assert.equal(P.deriveState(s({installed:false,now:40000})), 'unknown')
   assert.equal(P.deriveState(s()), 'disconnected')
   assert.equal(P.deriveState(s({action:'connect'})), 'connecting')
   assert.equal(P.deriveState(s({action:'disconnect'})), 'disconnecting')
   assert.equal(P.deriveState(s({nm:{ok:true,at:1000,match:'one',server:'CH#12',activated:true}})), 'connected')
+  assert.equal(P.deriveState(s({nm:{ok:true,at:1000,match:'one',server:'CH#12',activated:true},
+    cli:{ok:true,at:1000,state:'connected',server:'CH#12'}})), 'connected')
   assert.equal(P.deriveState(s({nm:{ok:true,at:1000,match:'one',server:'CH#12',activated:false}})), 'connecting')
   assert.equal(P.deriveState(s({nm:{ok:true,at:1000,match:'ambiguous'}})), 'unknown')
   assert.equal(P.deriveState(s({nm:{ok:false,at:1000}})), 'unknown')
@@ -168,6 +175,23 @@ const outdated = 'Server list is outdated, updating... This may take a moment.\n
   assert.equal(P.deriveState(s({cli:{ok:true,at:1500,state:'connected'}})), 'unknown')
   // Proton installed state not yet known does not hide a real tunnel.
   assert.equal(P.deriveState(s({installed:null, nm:{ok:true,at:1000,match:'one',server:'CH#12',activated:true}})), 'connected')
+  assert.equal(P.wireGuardObservation({ok:true,at:1000,wireGuard:'absent'}, 2000), 'absent')
+  assert.equal(P.wireGuardObservation({ok:true,at:1000,wireGuard:'present'}, 2000), 'present')
+  assert.equal(P.wireGuardObservation({ok:true,at:1000,wireGuard:'unknown'}, 2000), 'unknown')
+  assert.equal(P.wireGuardObservation({ok:true,at:1000,wireGuard:'absent'}, 40000), 'unknown')
+  assert.equal(P.wireGuardObservation({ok:true,at:3000,wireGuard:'absent'}, 2000), 'unknown')
+  assert.equal(P.deriveState(s({nm:{ok:true,at:3000,match:'none'},now:2000})), 'unknown')
+}
+{
+  const base = {installed:true, action:'', now:2000, phase:'', account:'signed-in',
+    nm:{ok:true,at:1000,match:'one',server:'CH#12',activated:true,wireGuard:'absent'}}
+  let status = P.buildStatus(Object.assign({}, base, {cli:{ok:false,at:1000,state:'unknown'}}))
+  assert.equal(status.state, 'connected'); assert.equal(status.protection, 'unverified'); assert.equal(status.protected, false)
+  status = P.buildStatus(Object.assign({}, base, {cli:{ok:true,at:1000,state:'connected',server:'CH#12'}}))
+  assert.equal(status.protection, 'verified'); assert.equal(status.protected, true)
+  status = P.buildStatus(Object.assign({}, base, {nm:Object.assign({}, base.nm, {wireGuard:'unknown'}),
+    cli:{ok:true,at:1000,state:'connected',server:'CH#12'}}))
+  assert.equal(status.state, 'connected'); assert.equal(status.protection, 'unverified'); assert.equal(status.protected, false)
 }
 {
   const shield = {state:'connected', vpn:'WireGuard'}
@@ -183,7 +207,7 @@ const outdated = 'Server list is outdated, updating... This may take a moment.\n
   assert.match(P.summary({installed:true, state:'disconnected', account:'signed-out'}), /Signed out/)
   assert.match(P.summary({installed:true, state:'unknown', account:'signed-in'}), /unknown/i)
   assert.equal(P.summary({installed:true, state:'connected', account:'signed-in', server:'CH#12', location:'Zurich, Switzerland', load:'34%', protocol:'wireguard'}),
-    'Connected · CH#12 · Zurich, Switzerland · Load 34% · wireguard')
+    'Connected · protection not verified · CH#12 · Zurich, Switzerland · Load 34% · wireguard')
   assert.equal(P.summary({installed:true, state:'disconnected', account:'signed-in'}), 'Disconnected · signed in')
   assert.equal(P.summary(undefined), '')
 }

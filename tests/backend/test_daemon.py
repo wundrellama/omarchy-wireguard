@@ -1,6 +1,8 @@
+import array
 import json
 import os
 import socket
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -30,15 +32,21 @@ class System:
     def __init__(self):
         self.removed = 0
         self.applied = 0
+        self.quarantined = 0
+        self.inspected = 0
 
     def remove_firewall(self):
         self.removed += 1
 
     def inspect_firewall_context(self):
+        self.inspected += 1
         return FirewallContext()
 
     def apply_firewall(self, context):
         self.applied += 1
+
+    def apply_quarantine(self):
+        self.quarantined += 1
 
 
 class EarlyFirewallTests(unittest.TestCase):
@@ -46,30 +54,32 @@ class EarlyFirewallTests(unittest.TestCase):
         for state in (None, {"enabled": False, "target": None, "mru": []}):
             system = System()
             reconcile_early_firewall(Store(state), system)
-            self.assertEqual((system.removed, system.applied), (1, 0))
+            self.assertEqual((system.removed, system.applied, system.quarantined), (1, 0, 0))
 
     def test_enabled_state_fails_closed(self):
         system = System()
         reconcile_early_firewall(Store({"enabled": True, "target": "Japan/Tokyo", "mru": []}), system)
-        self.assertEqual((system.removed, system.applied), (0, 1))
+        self.assertEqual((system.removed, system.applied, system.quarantined, system.inspected),
+                         (0, 0, 1, 0))
 
     def test_disabled_state_with_pending_dns_restore_fails_closed(self):
         system = System()
         store = Store({"enabled": False, "target": None, "mru": []},
                       dns=[["eth0", ["~."], True]])
         reconcile_early_firewall(store, system)
-        self.assertEqual((system.removed, system.applied), (0, 1))
+        self.assertEqual((system.removed, system.applied, system.quarantined), (0, 0, 1))
 
     def test_missing_state_with_pending_dns_restore_fails_closed(self):
         system = System()
         reconcile_early_firewall(Store(dns=[["eth0", ["~."], True]]), system)
-        self.assertEqual((system.removed, system.applied), (0, 1))
+        self.assertEqual((system.removed, system.applied, system.quarantined), (0, 0, 1))
 
     def test_corrupt_or_unsafe_state_fails_closed(self):
         for store in (Store({"enabled": "yes"}), Store(error=RuntimeError("unsafe"))):
             system = System()
             reconcile_early_firewall(store, system)
-            self.assertEqual((system.removed, system.applied), (0, 1))
+            self.assertEqual((system.removed, system.applied, system.quarantined, system.inspected),
+                             (0, 0, 1, 0))
 
     def test_protocol_rejection_ignores_disconnected_client(self):
         with patch("omarchy_wireguard.daemon.peer_credentials",
@@ -98,6 +108,40 @@ class ControllerProbe:
 
 
 class ConnectionTests(unittest.TestCase):
+    def test_import_descriptor_is_closed_after_controller_returns(self):
+        class ImportProbe:
+            def __init__(self):
+                self.calls = []
+                self.source_fd: int | None = None
+                self.emergencies = 0
+
+            def handle(self, op, args, *, source_fd=None):
+                self.calls.append((op, args))
+                if source_fd is None:
+                    raise AssertionError("missing source descriptor")
+                self.source_fd = source_fd
+                self.assert_open = os.fstat(source_fd).st_size
+                return {"state": "imported"}
+
+            def emergency(self):
+                self.emergencies += 1
+
+        server, peer = socket.socketpair()
+        with server, peer, tempfile.TemporaryFile() as source:
+            source.write(b"profile")
+            source.flush()
+            request = json.dumps({
+                "op": "import", "args": {"source": "fd", "name": "home.conf"},
+            }).encode() + b"\n"
+            peer.sendmsg([request], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                      array.array("i", [source.fileno()]))])
+            probe = ImportProbe()
+            _handle_connection(server, probe, os.getuid())
+            self.assertEqual(json.loads(peer.recv(4096))["ok"], True)
+            self.assertIsNotNone(probe.source_fd)
+            with self.assertRaises(OSError):
+                os.fstat(probe.source_fd if probe.source_fd is not None else -1)
+
     def test_successful_connect_and_status_survive_lost_response(self):
         for op in ("connect", "status"):
             with self.subTest(op=op):

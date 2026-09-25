@@ -22,9 +22,17 @@ vm.runInContext(source, model)
   }))
   assert.equal(status.ok, true)
   assert.equal(status.state, "enabled-unverified")
+  assert.equal(status.setupRequired, true, "a pre-v2 backend is surfaced for repair")
   assert.deepEqual(Array.from(status.locations, value => value.id), ["tyo", "lon", "la"])
   assert.equal(model.countdownText(status.countdown), "1m 5s")
   assert.match(model.tooltip(status), /Location: Tokyo/)
+}
+
+{
+  const status = model.parseStatus('{"mode":"disabled","enabled":false,"backend_version":"0.2.0","protocol_version":2}')
+  assert.equal(status.setupRequired, false)
+  assert.equal(status.backendVersion, "0.2.0")
+  assert.equal(status.protocolVersion, 2)
 }
 
 {
@@ -159,7 +167,11 @@ vm.runInContext(source, model)
 }
 
 {
-  assert.deepEqual(Array.from(model.importReviewArgs(['/a.zip'], {'home.conf':'Personal VPN'})), ['import','/a.zip','--labels','{"home.conf":"Personal VPN"}'])
+  assert.deepEqual(Array.from(model.importReviewArgs(['/a.zip'], {'home.conf':'Personal VPN'})), ['import','--labels','{"home.conf":"Personal VPN"}','--','/a.zip'])
+  assert.deepEqual(Array.from(model.parsePickerPaths('["/a.conf","/tmp/--labels"]', false)), ['/a.conf','/tmp/--labels'])
+  for (const raw of ['', '{}', '["relative.conf"]', '["/tmp/a\\n--labels"]', '["/tmp/a\\r.conf"]', '["/a",7]'])
+    assert.equal(model.parsePickerPaths(raw, false), null, raw)
+  assert.equal(model.parsePickerPaths('["/one","/two"]', true), null)
   assert.equal(model.validLabel('  '), false)
   assert.equal(model.validLabel('a\n'), false)
   assert.equal(model.validLabel('x'.repeat(129)), false)

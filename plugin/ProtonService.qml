@@ -76,9 +76,9 @@ Item {
 
   function refresh() {
     if (!active) return
-    if (installed === null && !probeProcess.running) { start(probeProcess, ["sh", "-c", "command -v protonvpn"], 3000); return }
-    if (installed !== true) return
     if (!nmProcess.running) start(nmProcess, ["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE,STATE", "connection", "show", "--active"], 3000)
+    if (installed === null && !probeProcess.running) start(probeProcess, ["sh", "-c", "command -v protonvpn"], 3000)
+    if (installed !== true) return
     if (!statusProcess.running && !actionProcess.running) start(statusProcess, ["protonvpn", "status"], 20000)
   }
 
@@ -193,11 +193,11 @@ Item {
   Timer {
     interval: root.panelOpen || root.phase !== "" || root.action !== "" ? 1500 : 3000
     repeat: true
-    running: root.active && root.installed === true
+    running: root.active
     onTriggered: if (!nmProcess.running) root.start(nmProcess, ["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE,STATE", "connection", "show", "--active"], 3000)
   }
   Timer {
-    interval: root.panelOpen || root.phase !== "" ? 5000 : 60000
+    interval: root.panelOpen || root.phase !== "" ? 5000 : 10000
     repeat: true
     running: root.active && root.installed === true
     onTriggered: if (!statusProcess.running && !actionProcess.running) root.start(statusProcess, ["protonvpn", "status"], 20000)

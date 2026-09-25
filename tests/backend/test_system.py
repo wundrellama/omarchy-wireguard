@@ -1,13 +1,15 @@
 import json
 import os
 import pwd
+import re
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from omarchy_wireguard.importer import Profile
-from omarchy_wireguard.nftables import FirewallContext
+from omarchy_wireguard.nftables import (FirewallContext, expected_policy_from_echo, render,
+                                        render_quarantine)
 from omarchy_wireguard.system import CommandRunner, HostSystem, SystemFailure
 
 
@@ -27,7 +29,74 @@ class FakeRunner:
         return response
 
 
+def observed_policy(rules):
+    chain = ""
+    signed = []
+    for line in rules.splitlines():
+        if line.strip().startswith("chain "):
+            chain = line.strip().split()[1]
+        match = re.search(r'comment "(owg:[^"]+)"', line)
+        if match:
+            signed.append((chain, match.group(1)))
+    objects = [
+        {"metainfo": {"json_schema_version": 1}},
+        {"table": {"family": "inet", "name": "omarchy_wireguard", "handle": 1}},
+        {"chain": {"family": "inet", "table": "omarchy_wireguard", "name": "output",
+                   "handle": 2, "type": "filter", "hook": "output", "prio": -10,
+                   "policy": "drop"}},
+        {"chain": {"family": "inet", "table": "omarchy_wireguard", "name": "forward",
+                   "handle": 3, "type": "filter", "hook": "forward", "prio": -10,
+                   "policy": "drop"}},
+    ]
+    objects.extend({"rule": {"family": "inet", "table": "omarchy_wireguard", "chain": chain,
+                             "handle": index + 4, "comment": comment,
+                             "expr": [{"counter": {"packets": 0, "bytes": 0}}]}}
+                   for index, (chain, comment) in enumerate(signed))
+    return json.dumps({"nftables": objects})
+
+
+def echoed_policy(rules):
+    observed = json.loads(observed_policy(rules))["nftables"]
+    return json.dumps({"nftables": [
+        {"add": entry} for entry in observed
+        if next(iter(entry)) in {"table", "chain", "rule"}
+    ]})
+
+
 class SystemTests(unittest.TestCase):
+    def test_quarantine_is_installed_without_host_discovery(self):
+        class Runner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, argv, *, stdin=None, timeout=10):
+                self.calls.append((argv, stdin, timeout))
+                if "--echo" in argv:
+                    return echoed_policy(render_quarantine())
+                if argv[:2] == ["nft", "-j"]:
+                    return observed_policy(render_quarantine())
+                return ""
+
+        runner = Runner()
+        HostSystem(runner).apply_quarantine()
+        self.assertEqual(runner.calls[0][0], ["nft", "-j", "--echo", "-f", "-"])
+        self.assertIn("policy drop", runner.calls[0][1])
+        self.assertNotIn("ip -json", runner.calls[0][1])
+        self.assertEqual(runner.calls[1][0],
+                         ["nft", "-j", "list", "table", "inet", "omarchy_wireguard"])
+
+    def test_firewall_apply_refuses_unverified_readback(self):
+        class Runner:
+            def run(self, argv, *, stdin=None, timeout=10):
+                if "--echo" in argv:
+                    return echoed_policy(render_quarantine())
+                if argv[:2] == ["nft", "-j"]:
+                    return json.dumps({"nftables": []})
+                return ""
+
+        with self.assertRaisesRegex(SystemFailure, "verification"):
+            HostSystem(Runner()).apply_quarantine()
+
     def test_command_runner_never_uses_a_shell(self):
         completed = subprocess.CompletedProcess(["true"], 0, "ok\n", "")
         with patch("subprocess.run", return_value=completed) as run:
@@ -38,14 +107,20 @@ class SystemTests(unittest.TestCase):
 
     def test_verification_requires_all_network_guarantees(self):
         uuid = "00000000-0000-0000-0000-000000000001"
+        context = FirewallContext(
+            tunnel_interface="wg0", lan_prefixes=("192.168.1.0/24",),
+            lan_resolvers=("192.168.1.1",), resolver_uid=992,
+            physical_interfaces=("eth0",),
+            lan_dns_links=(("eth0", ("192.168.1.1",)),),
+            tunnel_dns=("10.0.0.1",))
+        nft_key = ("nft", "-j", "list", "table", "inet", "omarchy_wireguard")
         responses = {
             ("nmcli", "-g", "GENERAL.STATE,GENERAL.DEVICES", "connection", "show", "uuid", uuid): "activated\nwg0\n",
             ("wg", "show", "wg0", "fwmark"): "0x6f7467\n",
             ("ip", "-json", "route", "get", "1.1.1.1"): json.dumps([{"dev": "wg0"}]),
             ("ip", "-6", "-json", "route", "get", "2606:4700:4700::1111"):
                 SystemFailure("no IPv6 route"),
-            ("nft", "list", "table", "inet", "omarchy_wireguard"):
-                "table inet omarchy_wireguard { chain output { type filter hook output priority -10; policy drop; meta mark 0x6f7467; comment \"WireGuard fail closed\"; } }",
+            nft_key: observed_policy(render(context)),
             ("resolvectl", "dns", "wg0"): "Link 7 (wg0): 10.0.0.1\n",
             ("resolvectl", "domain", "wg0"): "Link 7 (wg0): ~.\n",
             ("resolvectl", "domain", "eth0"): "Link 2 (eth0): ~lan\n",
@@ -53,49 +128,40 @@ class SystemTests(unittest.TestCase):
             ("resolvectl", "default-route", "eth0"): "Link 2 (eth0): no\n",
             ("wg", "show", "wg0", "latest-handshakes"): "peer\t950\n",
         }
-        context = FirewallContext(physical_interfaces=("eth0",),
-                                  lan_dns_links=(("eth0", ("192.168.1.1",)),),
-                                  tunnel_dns=("10.0.0.1",))
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        def verify():
+            system = HostSystem(FakeRunner(responses))
+            system.expected_firewall = expected_policy_from_echo(echoed_policy(render(context)))
+            return system.verify(uuid, "wg0", now=1000, firewall_context=context)
+
+        result = verify()
         self.assertTrue(result.ok)
         self.assertTrue(all(result.checks.values()))
 
         responses[("wg", "show", "wg0", "latest-handshakes")] = "peer\t800\n"
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        result = verify()
         self.assertFalse(result.ok)
         self.assertFalse(result.checks["handshake_fresh"])
 
         responses[("ip", "-json", "route", "get", "1.1.1.1")] = json.dumps([{"dev": "eth0"}])
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        result = verify()
         self.assertFalse(result.checks["ipv4_default"])
 
         responses[("wg", "show", "wg0", "fwmark")] = "0x0\n"
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        result = verify()
         self.assertFalse(result.checks["wireguard_fwmark"])
 
-        responses[("nft", "list", "table", "inet", "omarchy_wireguard")] = (
-            "table inet omarchy_wireguard { chain output { type filter hook output priority -10; "
-            "policy drop; comment \"WireGuard fail closed\"; } }")
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        responses[nft_key] = json.dumps({"nftables": []})
+        result = verify()
         self.assertFalse(result.checks["firewall_policy"])
 
-        responses[("nft", "list", "table", "inet", "omarchy_wireguard")] = (
-            "table inet omarchy_wireguard { chain output { type filter hook output priority -10; "
-            "policy drop; meta mark 0x6f7467; comment \"WireGuard fail closed\"; } }")
+        responses[nft_key] = observed_policy(render(context))
         responses[("resolvectl", "domain", "eth0")] = "Link 2 (eth0): ~. ~lan\n"
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        result = verify()
         self.assertFalse(result.checks["split_dns"])
 
         responses[("resolvectl", "domain", "eth0")] = "Link 2 (eth0): ~lan\n"
         responses[("resolvectl", "dns", "eth0")] = "Link 2 (eth0): 192.168.1.1 192.168.1.2\n"
-        result = HostSystem(FakeRunner(responses)).verify(uuid, "wg0", now=1000,
-                                                          firewall_context=context)
+        result = verify()
         self.assertFalse(result.checks["split_dns"])
 
     def test_only_prefixed_profiles_are_managed(self):
@@ -206,6 +272,8 @@ class SystemTests(unittest.TestCase):
             ("ip", "-json", "route", "show", "table", "main"): json.dumps([
                 {"dst": "default", "dev": "eth0"},
                 {"dst": "192.168.1.0/24", "dev": "eth0", "scope": "link"},
+                {"dst": "0.0.0.0/1", "dev": "eth0", "scope": "link"},
+                {"dst": "128.0.0.0/1", "dev": "eth0", "scope": "link"},
                 {"dst": "10.8.0.0/24", "dev": "wg-work", "scope": "link"},
                 {"dst": "172.17.0.0/16", "dev": "docker0", "scope": "link"},
                 {"dst": "10.20.0.0/16", "dev": "alfred-vpn", "scope": "link"},
@@ -222,11 +290,46 @@ class SystemTests(unittest.TestCase):
                 {"ifindex": 21, "ifname": "alfred-vpn", "linkinfo": {"info_kind": "wireguard"}},
                 {"ifindex": 22, "ifname": "tun0", "linkinfo": {"info_kind": "tun"}},
             ]),
+            ("ip", "-json", "address", "show"): json.dumps([
+                {"ifname": "eth0", "addr_info": [
+                    {"family": "inet", "local": "192.168.1.23", "prefixlen": 24},
+                    {"family": "inet6", "local": "fe80::23", "prefixlen": 64},
+                ]},
+                {"ifname": "wg-work", "addr_info": [
+                    {"family": "inet", "local": "10.8.0.2", "prefixlen": 24},
+                ]},
+            ]),
         })
         context = HostSystem(runner).inspect_firewall_context()
-        self.assertEqual(context.lan_prefixes, ("192.168.1.0/24",))
+        self.assertEqual(context.lan_prefixes, ("192.168.1.0/24", "fe80::/64"))
         self.assertEqual(context.physical_interfaces, ("eth0",))
         self.assertEqual(set(context.local_interfaces), {"docker0", "veth123"})
+
+    def test_lan_prefixes_come_from_private_underlay_addresses_not_routes(self):
+        runner = FakeRunner({
+            ("ip", "-json", "route", "show", "table", "main"): json.dumps([
+                {"dst": "default", "dev": "eth0"},
+                {"dst": "0.0.0.0/1", "dev": "eth0", "scope": "link"},
+                {"dst": "128.0.0.0/1", "dev": "eth0", "scope": "link"},
+                {"dst": "203.0.113.0/24", "dev": "eth0", "scope": "link"},
+            ]),
+            ("ip", "-6", "-json", "route", "show", "table", "main"): json.dumps([
+                {"dst": "::/1", "dev": "eth0", "scope": "link"},
+                {"dst": "8000::/1", "dev": "eth0", "scope": "link"},
+            ]),
+            ("ip", "-json", "link", "show"): json.dumps([
+                {"ifindex": 2, "ifname": "eth0", "linkinfo": {"info_kind": "ether"}},
+            ]),
+            ("ip", "-json", "address", "show"): json.dumps([
+                {"ifname": "eth0", "addr_info": [
+                    {"family": "inet", "local": "10.42.0.7", "prefixlen": 24},
+                    {"family": "inet6", "local": "fd42::7", "prefixlen": 64},
+                    {"family": "inet", "local": "203.0.113.7", "prefixlen": 24},
+                ]},
+            ]),
+        })
+        context = HostSystem(runner).inspect_firewall_context()
+        self.assertEqual(context.lan_prefixes, ("10.42.0.0/24", "fd42::/64"))
 
     def test_import_sets_deterministic_interface_dns_and_permissions(self):
         from test_atomic_import import profile, Runner, NAME, UUID

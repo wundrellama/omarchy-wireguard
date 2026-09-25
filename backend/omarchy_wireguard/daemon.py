@@ -8,7 +8,7 @@ import socket
 from pathlib import Path
 
 from .constants import SOCKET_PATH, STATE_DIR
-from .controller import Controller, RequestFailure, _dns_restore_state, network_context
+from .controller import Controller, RequestFailure, _dns_restore_state
 from .protocol import ProtocolError, authorized, peer_credentials, read_request, send_response
 from .storage import StateStore
 from .system import HostSystem, SystemFailure
@@ -68,6 +68,7 @@ def serve(controller_uid: int, socket_path: Path = SOCKET_PATH, state_dir: Path 
 
 def _handle_connection(connection: socket.socket, controller: Controller, controller_uid: int) -> None:
     request_id = None
+    source_fd = None
     try:
         # Only socket setup/read errors are transport failures. In particular,
         # an OSError raised by controller.handle must still fail closed below.
@@ -75,12 +76,15 @@ def _handle_connection(connection: socket.socket, controller: Controller, contro
             _pid, uid, _gid = peer_credentials(connection)
             if not authorized(uid, controller_uid):
                 raise ProtocolError("unauthorized peer")
-            request = read_request(connection)
+            request, source_fd = read_request(connection)
         except OSError as exc:
             LOG.warning("request transport failed (%s)", type(exc).__name__)
             return
         request_id = request.get("request_id")
-        result = controller.handle(request["op"], request["args"])
+        if source_fd is None:
+            result = controller.handle(request["op"], request["args"])
+        else:
+            result = controller.handle(request["op"], request["args"], source_fd=source_fd)
         response = {"ok": True, "request_id": request_id, "result": result}
     except (ProtocolError, RequestFailure) as exc:
         response = {"ok": False, "request_id": request_id,
@@ -92,6 +96,12 @@ def _handle_connection(connection: socket.socket, controller: Controller, contro
         controller.emergency()
         response = {"ok": False, "request_id": request_id,
                     "error": {"code": "internal", "message": "internal failure"}}
+    finally:
+        if source_fd is not None:
+            try:
+                os.close(source_fd)
+            except OSError:
+                pass
     try:
         send_response(connection, response)
     except OSError as exc:
@@ -112,25 +122,25 @@ def reconcile_early_firewall(store: StateStore, system: HostSystem) -> None:
         dns_restore = _dns_restore_state(store.read("dns.json", []))
         if state is None:
             if dns_restore:
-                system.apply_firewall(system.inspect_firewall_context())
+                system.apply_quarantine()
             else:
                 system.remove_firewall()
             return
         if (not isinstance(state, dict) or not isinstance(state.get("enabled"), bool) or
-                (state["enabled"] and not isinstance(state.get("target"), str))):
+                (state["enabled"] and
+                 (not isinstance(state.get("target"), str) or not state.get("target")))):
             raise ValueError("invalid state")
         if not state["enabled"]:
             if dns_restore:
-                system.apply_firewall(system.inspect_firewall_context())
+                system.apply_quarantine()
             else:
                 system.remove_firewall()
             return
-        policy = store.read("network.json", {})
-        system.apply_firewall(network_context(policy, system.inspect_firewall_context()))
+        system.apply_quarantine()
     except Exception:
         # Missing state means first install; unreadable or malformed state is not equivalent
         # to an intentional disable and must remain conservative.
-        system.apply_firewall(system.inspect_firewall_context())
+        system.apply_quarantine()
 
 
 def main() -> None:

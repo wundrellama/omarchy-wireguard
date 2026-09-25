@@ -16,7 +16,9 @@ from dataclasses import dataclass, replace
 from .constants import (NFT_TABLE, PROFILE_PREFIX, STALE_HANDSHAKE,
                          WIREGUARD_DNS_PRIORITY, WIREGUARD_FWMARK, WIREGUARD_FWMARK_TEXT)
 from .importer import Profile
-from .nftables import FirewallContext, FirewallError, render
+from .nftables import (FirewallContext, FirewallError, expected_policy_comments,
+                       expected_policy_from_echo, observed_policy_matches, render,
+                       render_quarantine, _signed_rules)
 
 
 class SystemFailure(RuntimeError):
@@ -72,6 +74,7 @@ class HostSystem:
     def __init__(self, runner: CommandRunner | None = None, controller_uid: int | None = None):
         self.runner = runner or CommandRunner()
         self.controller_uid = controller_uid
+        self.expected_firewall = None
 
     def import_profile(self, profile: Profile, connection_name: str) -> str:
         if not re.fullmatch(rf"{PROFILE_PREFIX}[a-z0-9-]+", connection_name):
@@ -165,13 +168,36 @@ class HostSystem:
             rules = render(context)
         except FirewallError as exc:
             raise SystemFailure(str(exc)) from exc
+        self._replace_firewall(rules, timeout, quarantine_on_mismatch=True)
+
+    def apply_quarantine(self, timeout: float = 10) -> None:
+        self._replace_firewall(render_quarantine(), timeout, quarantine_on_mismatch=False)
+
+    def _replace_firewall(self, rules: str, timeout: float, *, quarantine_on_mismatch: bool) -> None:
         # A single nft input is one netlink transaction. Only our dedicated table is replaced.
         script = f"delete table inet {NFT_TABLE}\n" + rules
         try:
-            self.runner.run(["nft", "-f", "-"], stdin=script, timeout=timeout)
+            echoed = self.runner.run(["nft", "-j", "--echo", "-f", "-"],
+                                     stdin=script, timeout=timeout)
         except SystemFailure:
             # First boot has no table to delete. The second transaction only creates our table.
-            self.runner.run(["nft", "-f", "-"], stdin=rules, timeout=timeout)
+            echoed = self.runner.run(["nft", "-j", "--echo", "-f", "-"],
+                                     stdin=rules, timeout=timeout)
+        try:
+            expected = expected_policy_from_echo(echoed)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemFailure("nftables did not echo the applied policy") from exc
+        observed = self.runner.run(
+            ["nft", "-j", "list", "table", "inet", NFT_TABLE], timeout=timeout)
+        if not observed_policy_matches(observed, expected):
+            if quarantine_on_mismatch:
+                try:
+                    self._replace_firewall(render_quarantine(), timeout,
+                                           quarantine_on_mismatch=False)
+                except SystemFailure:
+                    pass
+            raise SystemFailure("nftables policy verification failed")
+        self.expected_firewall = expected
 
     def remove_firewall(self, timeout: float = 10) -> None:
         tables = self.runner.run(["nft", "list", "tables"], timeout=timeout)
@@ -179,10 +205,11 @@ class HostSystem:
             self.runner.run(["nft", "delete", "table", "inet", NFT_TABLE], timeout=timeout)
 
     def inspect_firewall_context(self, timeout: float = 10) -> FirewallContext:
-        each = max(0.1, timeout / 3)
+        each = max(0.1, timeout / 4)
         routes = json.loads(self.runner.run(["ip", "-json", "route", "show", "table", "main"], timeout=each))
         routes += json.loads(self.runner.run(["ip", "-6", "-json", "route", "show", "table", "main"], timeout=each))
         links = json.loads(self.runner.run(["ip", "-json", "link", "show"], timeout=each))
+        addresses = json.loads(self.runner.run(["ip", "-json", "address", "show"], timeout=each))
         bridges = {item.get("ifname") for item in links
                    if item.get("linkinfo", {}).get("info_kind") == "bridge" and item.get("ifname")}
         bridge_indexes = {item.get("ifindex") for item in links if item.get("ifname") in bridges}
@@ -194,9 +221,33 @@ class HostSystem:
                            if route.get("dst") == "default" and route.get("dev")}
         physical = {dev for dev in default_devices
                     if dev in link_by_name and _is_underlay(dev, link_by_name[dev], set(local))}
-        lan = {route["dst"] for route in routes
-               if route.get("dev") in physical and route.get("scope") == "link" and
-               route.get("dst") not in (None, "default")}
+        lan = set()
+        trusted_v4 = (
+            ipaddress.IPv4Network("10.0.0.0/8"),
+            ipaddress.IPv4Network("172.16.0.0/12"),
+            ipaddress.IPv4Network("192.168.0.0/16"),
+            ipaddress.IPv4Network("169.254.0.0/16"),
+        )
+        trusted_v6 = (
+            ipaddress.IPv6Network("fc00::/7"),
+            ipaddress.IPv6Network("fe80::/10"),
+        )
+        try:
+            for link in addresses:
+                if not isinstance(link, dict) or link.get("ifname") not in physical:
+                    continue
+                for item in link.get("addr_info", []):
+                    if not isinstance(item, dict) or item.get("family") not in {"inet", "inet6"}:
+                        continue
+                    prefix = item.get("prefixlen")
+                    if not isinstance(prefix, int) or isinstance(prefix, bool):
+                        raise ValueError
+                    network = ipaddress.ip_interface(f"{item.get('local')}/{prefix}").network
+                    allowed = trusted_v4 if isinstance(network, ipaddress.IPv4Network) else trusted_v6
+                    if any(network.subnet_of(item) for item in allowed):
+                        lan.add(str(network))
+        except (TypeError, ValueError) as exc:
+            raise SystemFailure("invalid physical interface address data") from exc
         # DNS is intentionally empty until discovered from these verified underlays.
         try:
             resolver_uid = pwd.getpwnam("systemd-resolve").pw_uid
@@ -323,13 +374,18 @@ class HostSystem:
         except SystemFailure:
             route6 = []
         ipv6_tunnel = bool(route6) and route6[0].get("dev") == interface
-        firewall = self.runner.run(["nft", "list", "table", "inet", NFT_TABLE], timeout=each)
-        output_drop = re.search(r"chain output\s*\{.*?hook output.*?policy drop", firewall,
-                                re.DOTALL) is not None
-        mark_match = re.search(r"meta mark (0x[0-9a-fA-F]+|[0-9]+)", firewall)
-        firewall_ok = (f"table inet {NFT_TABLE}" in firewall and
-                       "WireGuard fail closed" in firewall and output_drop and mark_match is not None and
-                       int(mark_match.group(1), 0) == WIREGUARD_FWMARK)
+        firewall = self.runner.run(
+            ["nft", "-j", "list", "table", "inet", NFT_TABLE], timeout=each)
+        try:
+            expected_firewall = render(firewall_context) if firewall_context else ""
+        except FirewallError as exc:
+            raise SystemFailure("invalid expected firewall policy") from exc
+        expected_policy = self.expected_firewall
+        expected_matches_context = (expected_policy is not None and
+                                    expected_policy_comments(expected_policy) ==
+                                    _signed_rules(expected_firewall))
+        firewall_ok = (expected_policy is not None and expected_matches_context and
+                       observed_policy_matches(firewall, expected_policy))
         ipv6_blocked = firewall_ok
         tunnel_servers = set(_resolved_addresses(
             self.runner.run(["resolvectl", "dns", interface], timeout=each)))

@@ -36,7 +36,8 @@ try:
     s.check('disabled_positive_control', bool(system.resolve_endpoint('disabled-control.endpoint.test',51820)))
     config=f'[Interface]\nPrivateKey = {private}\nAddress = 10.77.0.2/24\nDNS = 10.77.0.1\n[Peer]\nPublicKey = {peer_public}\nAllowedIPs = 0.0.0.0/0\nEndpoint = {endpoint}:51820\nPersistentKeepalive = 1\n'
     s.write('/run/synthetic.conf',config); os.chmod('/run/synthetic.conf',0o600)
-    controller.import_profiles({'path':'/run/synthetic.conf','locations':{'synthetic.conf':{'country':'Test','city':'Private'}}})
+    with open('/run/synthetic.conf','rb') as source:
+        controller.import_profiles({'source':'fd','name':'synthetic.conf','locations':{'synthetic.conf':{'country':'Test','city':'Private'}}},source_fd=source.fileno())
     profile=controller.catalog[0]
     original_activate = system.activate
     def activate(uuid, timeout=10):

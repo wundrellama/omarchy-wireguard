@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
+from . import PROTOCOL_VERSION, __version__
 from .constants import CITY_BUDGET, MAX_RETRY, PAUSE_SECONDS, PROFILE_PREFIX, WIREGUARD_FWMARK
 from .importer import ImportFailure, decode_payload, parse_profiles
 from .nftables import FirewallContext
@@ -71,9 +72,20 @@ def network_context(policy: object, base: FirewallContext) -> FirewallContext:
             if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
                 raise ValueError
             endpoints.append((address, port))
-        routes = tuple(str(ipaddress.ip_network(route, strict=False)) for route in alfred["routes"])
+        route_networks = tuple(ipaddress.ip_network(route, strict=False) for route in alfred["routes"])
+        private_v4 = (
+            ipaddress.IPv4Network("10.0.0.0/8"),
+            ipaddress.IPv4Network("172.16.0.0/12"),
+            ipaddress.IPv4Network("192.168.0.0/16"),
+        )
+        private_v6 = (ipaddress.IPv6Network("fc00::/7"),)
+        for route in route_networks:
+            allowed = private_v4 if isinstance(route, ipaddress.IPv4Network) else private_v6
+            if not any(route.subnet_of(item) for item in allowed):
+                raise ValueError
+        routes = tuple(str(route) for route in route_networks)
     except (TypeError, ValueError) as exc:
-        raise RequestFailure("alfred-vpn endpoints/routes must be exact IP values") from exc
+        raise RequestFailure("alfred-vpn endpoints must be exact IP values and routes must be private") from exc
     return FirewallContext(lan_prefixes=base.lan_prefixes, lan_resolvers=resolver_values,
                            resolver_uid=base.resolver_uid,
                            alfred_interface="alfred-vpn", alfred_endpoints=tuple(endpoints),
@@ -110,7 +122,8 @@ class Controller:
         if (not isinstance(persisted, dict) or "enabled" not in persisted or
                 not isinstance(persisted["enabled"], bool)):
             raise RequestFailure("invalid persisted state")
-        if persisted.get("enabled") and not isinstance(persisted.get("target"), str):
+        if (persisted.get("enabled") and
+                (not isinstance(persisted.get("target"), str) or not persisted.get("target"))):
             raise RequestFailure("enabled persisted state requires a target")
         if not isinstance(persisted.get("mru", []), list):
             raise RequestFailure("invalid persisted MRU")
@@ -131,19 +144,25 @@ class Controller:
 
     def boot(self) -> None:
         if self.mode == "connecting":
+            self.system.apply_quarantine()
             self._fail_closed()
             self._attempt()
         else:
             self._direct_disconnect()
             self._clear_dns_restore()
 
-    def handle(self, operation: str, args: dict[str, Any]) -> dict[str, Any]:
+    def handle(self, operation: str, args: dict[str, Any], *,
+               source_fd: int | None = None) -> dict[str, Any]:
         handlers = {
             "status": self.status, "list": self.list_profiles, "import": self.import_profiles,
             "connect": self.connect, "disconnect": self.disconnect, "retry": self.retry,
             "pause": self.pause, "diagnostics": self.diagnostics,
         }
         try:
+            if source_fd is not None and operation != "import":
+                raise RequestFailure("source descriptor is valid only for import")
+            if operation == "import":
+                return self.import_profiles(args, source_fd=source_fd)
             return handlers[operation](args)
         except (ImportFailure, SystemFailure) as exc:
             raise RequestFailure(str(exc)) from exc
@@ -154,6 +173,7 @@ class Controller:
         target = self._city(target_profile["city_key"] if target_profile else self.target)
         current = self._profile_summary(self.current) if self.current else None
         return {"mode": self.mode, "enabled": self.enabled, "target": self.target,
+                "backend_version": __version__, "protocol_version": PROTOCOL_VERSION,
                 "current_profile": self.current["id"] if self.current else None,
                 "target_city": target, "current": current,
                 "target_profile": self._profile_summary(target_profile) if target_profile else None,
@@ -176,12 +196,14 @@ class Controller:
                               if key != "city_key"} for item in self.catalog],
                 "mru": list(self.mru)}
 
-    def import_profiles(self, args: dict) -> dict:
+    def import_profiles(self, args: dict, *, source_fd: int | None = None) -> dict:
         proposed_network = args.get("network", self.network_policy)
         network_context(proposed_network, FirewallContext())
         if self.enabled and proposed_network != self.network_policy:
             raise RequestFailure("cannot change network policy while enabled; disconnect first")
-        files = decode_payload(args, self.controller_uid)
+        if "path" in args:
+            raise RequestFailure("path imports are disabled; use a source descriptor")
+        files = decode_payload(args, self.controller_uid, source_fd)
         sources = {item["source_name"] for item in self.catalog}
         for name, _raw in files:
             if name in sources:
@@ -267,12 +289,15 @@ class Controller:
         for profile in self.catalog:
             if profile[key] == value:
                 bootstrap_hostname(profile["endpoint_host"])
+        # Establish a discovery-independent barrier before enabled intent is
+        # published or any existing tunnel is disrupted.
+        self.system.apply_quarantine()
         self.enabled, self.target, self.mode = True, target, "connecting"
         self.pause_until = None
         self.retry_count = 0
         self.retry_at = self.clock()
         self._persist()
-        self._emergency_disconnect()
+        self._emergency_disconnect(quarantine_installed=True)
         return self.status({})
 
     def disconnect(self, args: dict) -> dict:
@@ -454,10 +479,11 @@ class Controller:
         raise SystemFailure(last_error)
 
     def _schedule_connecting(self) -> None:
+        self.system.apply_quarantine()
         self.mode = "connecting"
         self.retry_at = self.clock()
         self._persist()
-        self._emergency_disconnect()
+        self._emergency_disconnect(quarantine_installed=True)
 
     def _failure(self, reason: str) -> None:
         self._emergency_disconnect()
@@ -466,7 +492,9 @@ class Controller:
         self.retry_at = self.clock() + min(MAX_RETRY, 2 ** min(self.retry_count, 9))
         self._notify("failed", "WireGuard connection failed; traffic remains blocked")
 
-    def _emergency_disconnect(self) -> None:
+    def _emergency_disconnect(self, *, quarantine_installed: bool = False) -> None:
+        if not quarantine_installed:
+            self.system.apply_quarantine()
         if self.interface:
             try:
                 self.system.clear_tunnel_dns(self.interface)

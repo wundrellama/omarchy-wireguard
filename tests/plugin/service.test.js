@@ -7,9 +7,9 @@ const Model = {}; vm.createContext(Model); vm.runInContext(fs.readFileSync(path.
 const Proton = {}; vm.createContext(Proton); vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugin/Proton.js'),'utf8'), Proton)
 // Exercise production function bodies; QML runtime imports are tested separately.
 function service() {
-  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null, pendingConnection:null, lastConnection:null,
+  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null, pendingConnection:null, lastConnection:null, wireGuardObservationAfter:0,
     Qt:{callLater(){}}, protonService:{status:{state:'absent',installed:false}}, status:Model.unknownStatus(), catalog:{locations:[]},
-    disconnectRecovery:false, lastStatusAt:0, closedRefreshIntervalSec:30, busy:false, panelOpen:false,
+    disconnectRecovery:false, wireGuardRecovery:false, statusRevision:0, lastStatusAt:0, closedRefreshIntervalSec:30, busy:false, panelOpen:false,
     lastError:'', actionError:'', pendingAction:'', actionMessage:'', refreshing:false,
     sawFirstStatus:false, previousState:'', previousPaused:false, failureNotificationShown:false,
     handshakeFailureConfirmationPending:false, importPaths:[], currentUser:'tester', installScriptPath:'/not/executed',
@@ -57,7 +57,7 @@ commandService.actionProcess.running=false
 commandService.applyStatus('{"mode":"disabled","enabled":false}')
 commandService.importPaths=['/bundle.zip']; commandService.status.importReview={candidates:['home.conf']}
 commandService.submitImportReview({'home.conf':'Personal'})
-assert.deepEqual(commandService.actionProcess.command,['omarchy-wireguard','import','/bundle.zip','--labels','{"home.conf":"Personal"}'])
+assert.deepEqual(commandService.actionProcess.command,['omarchy-wireguard','import','--labels','{"home.conf":"Personal"}','--','/bundle.zip'])
 // Bootstrap is explicit, even before the first successful status response.
 const bootstrap=service(); bootstrap.active=true
 assert.equal(bootstrap.installProcess.command,undefined)
@@ -71,4 +71,7 @@ for (const overrides of [{active:false},{busy:true},{installScriptPath:''},{curr
   const blocked=service(); Object.assign(blocked,{active:true},overrides)
   blocked.installBackend(); assert.equal(blocked.installProcess.command,undefined)
 }
+const recovery=service(); recovery.active=true; recovery.wireGuardRecovery=true
+recovery.disconnect()
+assert.deepEqual(recovery.actionProcess.command,['omarchy-wireguard','disconnect'])
 console.log('service tests passed')

@@ -195,25 +195,32 @@ function splitTerse(line) {
 // makes the observation ambiguous (unknown), never a fallback match.
 function parseActive(raw) {
   var candidates = []
+  var wireGuard = "absent"
   var rows = lines(raw)
   for (var i = 0; i < rows.length; i++) {
     if (!rows[i]) continue
     var fields = splitTerse(rows[i])
     if (fields.length !== 5) {
+      if (rows[i].indexOf("omarchy-wireguard-") !== -1 || rows[i].indexOf("owg-") !== -1)
+        wireGuard = "unknown"
       // A malformed row mentioning Proton is ambiguous, never skipped.
       if (rows[i].indexOf("ProtonVPN ") !== -1 || rows[i].indexOf("proton0") !== -1)
-        return { ok: true, match: "ambiguous", server: "", activated: false }
+        return { ok: true, match: "ambiguous", server: "", uuid: "", activated: false, wireGuard: wireGuard }
       continue
     }
+    if (fields[0].indexOf("omarchy-wireguard-") === 0 || fields[3].indexOf("owg-") === 0)
+      wireGuard = "present"
     if (fields[0].indexOf("ProtonVPN ") !== 0 && fields[3] !== "proton0") continue
     candidates.push(fields)
   }
-  if (candidates.length === 0) return { ok: true, match: "none", server: "", activated: false }
+  if (candidates.length === 0) return { ok: true, match: "none", server: "", uuid: "", activated: false, wireGuard: wireGuard }
   var row = candidates[0]
-  if (candidates.length !== 1 || row[0].indexOf("ProtonVPN ") !== 0 || row[2] !== "wireguard" || row[3] !== "proton0")
-    return { ok: true, match: "ambiguous", server: "", activated: false }
+  if (candidates.length !== 1 || row[0].indexOf("ProtonVPN ") !== 0 || row[2] !== "wireguard" || row[3] !== "proton0"
+      || !/^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(row[1]))
+    return { ok: true, match: "ambiguous", server: "", uuid: "", activated: false, wireGuard: wireGuard }
   var server = row[0].substring(10)
-  return { ok: true, match: "one", server: validServerName(server) ? server : "", activated: row[4] === "activated" }
+  return { ok: true, match: "one", server: validServerName(server) ? server : "", uuid: row[1],
+    activated: row[4] === "activated", wireGuard: wireGuard }
 }
 
 // `proton_servers.py` output: {ok, fields, servers: [[name, country, city,
@@ -399,7 +406,14 @@ function filterCountries(countries, query) {
 // ---- state -----------------------------------------------------------------
 
 function fresh(observation, now) {
-  return !!observation && observation.ok === true && Number(observation.at) > 0 && now - observation.at <= STALE_MS
+  var at = Number(observation && observation.at)
+  return !!observation && observation.ok === true && at > 0 && now >= at && now - at <= STALE_MS
+}
+
+function wireGuardObservation(observation, now) {
+  if (!fresh(observation, now)) return "unknown"
+  return observation.wireGuard === "present" || observation.wireGuard === "absent"
+    ? observation.wireGuard : "unknown"
 }
 
 // nmcli is the authority for "a Proton tunnel exists"; the slower CLI status
@@ -407,12 +421,14 @@ function fresh(observation, now) {
 // a contradiction (unknown).
 function deriveState(input) {
   var s = input || {}
-  if (s.installed === false) return "absent"
   if (s.action === "connect") return "connecting"
   if (s.action === "disconnect") return "disconnecting"
   var nm = s.nm || {}
+  // An exact active NetworkManager connection remains operational evidence
+  // even if the Proton CLI was removed or its installation probe failed.
   if (!fresh(nm, s.now)) return "unknown"
   if (nm.match === "one") return nm.activated ? "connected" : "connecting"
+  if (s.installed === false && nm.match === "none") return "absent"
   if (nm.match !== "none") return "unknown"
   var cli = s.cli || {}
   if (fresh(cli, s.now) && cli.state === "connected" && cli.at > nm.at) return "unknown"
@@ -425,6 +441,7 @@ function buildStatus(input) {
   var nm = s.nm || {}
   var cli = s.cli || {}
   var details = state === "connected" && fresh(cli, s.now) && cli.state === "connected" && cli.server === nm.server
+  var protectedConnection = details && wireGuardObservation(nm, s.now) === "absent"
   return {
     installed: s.installed,
     state: state,
@@ -435,15 +452,17 @@ function buildStatus(input) {
     server: state === "connected" || state === "connecting" ? text(nm.server) : "",
     location: details ? cli.location : "",
     load: details ? cli.load : "",
-    protocol: details ? cli.protocol : ""
+    protocol: details ? cli.protocol : "",
+    protection: state === "connected" ? (protectedConnection ? "verified" : "unverified") : "unknown",
+    protected: state === "connected" && protectedConnection
   }
 }
 
 function wireGuardActive(status, recovery) {
   var value = status || {}
   var state = text(value.state)
-  return value.enabled === true || state === "connected" || state === "connecting" || state === "failed"
-    || state === "enabled-unverified" || (state === "unknown" && recovery === true)
+  return recovery === true || value.enabled === true || state === "connected" || state === "connecting"
+    || state === "failed" || state === "enabled-unverified"
 }
 
 // Proton may start only after a WireGuard status poll newer than the
@@ -467,8 +486,8 @@ function shield(wg, proton, recovery, absent) {
   var pActive = pState === "connected" || pState === "connecting" || pState === "disconnecting"
   var wgActive = wireGuardActive(value, recovery)
   if (pActive && wgActive) return { state: "conflict", vpn: "", label: "Conflict: WireGuard and Proton VPN both report active" }
-  if (pState === "connected" && wgState === "unknown" && absent !== true)
-    return { state: "unknown", vpn: "", label: "WireGuard status unknown; Proton VPN connected" }
+  if (pState === "connected" && (proton.protection !== "verified" || absent !== true))
+    return { state: "enabled-unverified", vpn: "Proton", label: "Proton VPN connected; protection not verified" }
   if (pState === "connected") return { state: "connected", vpn: "Proton", label: "Proton VPN connected" }
   if (pActive) return { state: "connecting", vpn: "Proton", label: "Proton VPN " + pState }
   if (wgActive || wgNamed) return wgResult
@@ -483,6 +502,8 @@ function tooltip(result, wg, proton) {
   if (result && result.state === "conflict") out.push("Conflict: WireGuard and Proton VPN both report active; protection is unclear")
   else if (result && result.vpn) out.push("Active VPN: " + (result.vpn === "Proton" ? "Proton VPN" : result.vpn))
   if (proton.phase) out.push("Switching VPN: traffic can use the regular connection")
+  if (proton.state === "connected" && proton.protection !== "verified")
+    out.push("Proton protection is not fully verified")
   out.push("Proton VPN: " + proton.state)
   if (proton.server) out.push("Proton server: " + proton.server + (proton.location ? " (" + proton.location + ")" : ""))
   if (proton.load || proton.protocol) out.push([proton.load ? "Load " + proton.load : "", proton.protocol].filter(function(v) { return !!v }).join(" · "))
@@ -496,7 +517,8 @@ function summary(status) {
   if (status.installed !== true) return "Checking for the Proton VPN CLI"
   if (status.account === "signed-out" && status.state !== "connected") return "Signed out. Sign in with Proton's own client; this panel never handles your password."
   if (status.state === "connected")
-    return ["Connected", status.server, status.location, status.load ? "Load " + status.load : "", status.protocol]
+    return [status.protection === "verified" ? "Connected" : "Connected · protection not verified",
+      status.server, status.location, status.load ? "Load " + status.load : "", status.protocol]
       .filter(function(v) { return !!v }).join(" · ")
   if (status.state === "connecting") return "Connecting" + (status.server ? " · " + status.server : "")
   if (status.state === "disconnecting") return "Disconnecting"
@@ -507,8 +529,10 @@ function summary(status) {
 // Traffic sampler key: a WireGuard profile ID, or "@proton" (which cannot be
 // a profile ID) for the exact Proton mapping mode of traffic.py.
 function trafficProfile(wg, result) {
-  if (!result || result.state !== "connected") return ""
-  if (result.vpn === "Proton") return "@proton"
+  if (!result) return ""
+  if (result.vpn === "Proton" && (result.state === "connected" || result.state === "enabled-unverified"))
+    return "@proton"
+  if (result.state !== "connected") return ""
   var value = wg || {}
   return result.vpn === "WireGuard" && value.state === "connected" ? text(value.currentProfile) : ""
 }

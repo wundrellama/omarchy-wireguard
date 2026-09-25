@@ -215,7 +215,11 @@ def lifecycle(inject_failure, assert_import_inactive):
     config = f'[Interface]\nPrivateKey = {private}\nAddress = 10.77.0.2/24\nDNS = 10.77.0.1\n[Peer]\nPublicKey = {peer_public}\nAllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.2:51820\nPersistentKeepalive = 1\n'
     write('/run/synthetic.conf', config)
     os.chmod('/run/synthetic.conf', 0o600)
-    imported = controller.import_profiles({'path': '/run/synthetic.conf', 'locations': {'synthetic.conf': {'country': 'Test', 'city': 'Private'}}})
+    with open('/run/synthetic.conf', 'rb') as source:
+        imported = controller.import_profiles(
+            {'source': 'fd', 'name': 'synthetic.conf',
+             'locations': {'synthetic.conf': {'country': 'Test', 'city': 'Private'}}},
+            source_fd=source.fileno())
     check('real_controller_import', imported['imported'] and len(controller.catalog) == 1)
     check('import_tempfile_removed', not list(Path('/run/omarchy-wireguard').glob('import-*')))
     profile = controller.catalog[0]
@@ -316,7 +320,7 @@ def lifecycle(inject_failure, assert_import_inactive):
     def drops():
         table = json.loads(cmd(['nft', '-j', 'list', 'table', 'inet', 'omarchy_wireguard']))
         return sum(expr['counter']['packets'] for item in table['nftables']
-                   if item.get('rule', {}).get('comment') == 'WireGuard fail closed'
+                   if str(item.get('rule', {}).get('comment', '')).endswith(':WireGuard fail closed')
                    for expr in item['rule']['expr'] if 'counter' in expr)
     before_drops = drops()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -360,7 +364,11 @@ def lifecycle(inject_failure, assert_import_inactive):
     failing = Controller(FailingCatalog(Path('/var/lib/failed-import')), system, controller_uid=0)
     refused = False
     try:
-        failing.import_profiles({'path': '/run/synthetic.conf', 'locations': {'synthetic.conf': {'country': 'Test', 'city': 'Rollback'}}})
+        with open('/run/synthetic.conf', 'rb') as source:
+            failing.import_profiles(
+                {'source': 'fd', 'name': 'synthetic.conf',
+                 'locations': {'synthetic.conf': {'country': 'Test', 'city': 'Rollback'}}},
+                source_fd=source.fileno())
     except ImportFailure:
         refused = True
     after_profiles = cmd(['nmcli', '-t', '-f', 'NAME,UUID', 'connection', 'show'])

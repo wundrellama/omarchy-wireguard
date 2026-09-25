@@ -8,7 +8,7 @@ TestCase {
     compare(c.locations[0].label, "Home")
     compare(Model.connectArgs(c.locations[0]).join("|"), "connect|--profile|p")
     compare(Model.filterLocations(c.locations,"home.conf").length, 1)
-    compare(Model.importReviewArgs(["/tmp/a.zip"],{"a.conf":"Home"})[2], "--labels")
+    compare(Model.importReviewArgs(["/tmp/a.zip"],{"a.conf":"Home"}).join("|"), "import|--labels|{\"a.conf\":\"Home\"}|--|/tmp/a.zip")
   }
   function test_unknown() {
     compare(Model.parseStatus('{}').state,"unknown")

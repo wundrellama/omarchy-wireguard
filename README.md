@@ -17,7 +17,7 @@ The bar shows a shield. Click the shield to open the profile panel.
 | Red shield | Failed or unverified, a Proton VPN error, or a conflict: WireGuard and Proton VPN both report active. |
 | Muted shield | Disabled, paused, or unknown. Read the panel for the exact state. |
 
-The shield shows the active VPN: WireGuard or Proton VPN. The tooltip names the active VPN and its server.
+The shield shows the active VPN: WireGuard or Proton VPN. The tooltip names the active VPN and its server, and warns when the connection is operational but protection has not yet been verified.
 
 The backend checks the tunnel interface, firewall policy, default route, Domain Name System (DNS) configuration, IPv6 policy, and recent WireGuard handshake. Missing, stale, or contradictory status appears as unknown. A green icon reports these checks, not proof of every possible traffic path.
 
@@ -114,7 +114,7 @@ For a directory or ZIP, `--labels '{"personal.conf":"Personal exit"}'` maps exac
 
 Imports add to the catalog; they never replace old profiles. Duplicate source names are rejected, and duplicate basenames in a multi-file CLI import must be renamed explicitly. Profile replacement, update and removal are not implemented in this slice. Existing connections and IDs survive an import. CLI imports no longer discover `alfred-vpn` or overwrite saved network policy.
 
-The development panel lists named profiles without requiring geography, searches labels/source names/locations, and connects the exact selected ID. Ambiguous imports request display labels and add profiles without replacing existing ones. Missing, stale or contradictory status is shown as unknown rather than protected or disconnected. Timed pause is not exposed in this panel. Private/split tunnels and Proton remain unsupported; do not deploy it as a replacement for both installed plugins.
+The panel lists named profiles without requiring geography, searches labels/source names/locations, and connects the exact selected ID. Ambiguous imports request display labels and add profiles without replacing existing ones. Missing, stale or contradictory status is shown as unknown rather than protected or disconnected. Timed pause and private/split tunnels remain unsupported. Proton VPN is supported when its official CLI is installed; the panel coordinates transitions but does not enable Proton's kill switch automatically.
 
 If a backend failure leaves traffic blocked:
 
@@ -171,4 +171,4 @@ The separate [network namespace harness](tests/network/README.md) exercises actu
 
 The [real-service lifecycle harness](tests/lifecycle/README.md) adds isolated NetworkManager, systemd-resolved, actual DNS answers and controller transitions. Run `python3 -B tests/lifecycle/run.py` and its documented failure/regression scenarios. These are real foreground daemons in private namespaces, not systemd-managed services or an installation test; the harness documents synthetic-network, UID and DNS limits. Its normal passing run does not excuse a failing inactive-import regression.
 
-The [disposable systemd VM harness](tests/vm/README.md) covers actual installation, emergency-disable, uninstall and injected installer rollback with real systemd, NetworkManager and nftables. Its 36 passing checks preserve NetworkManager's running identity and unrelated NM/nft settings. The guest has no host network or filesystem shares; graphical user integration is explicitly stubbed, and installed-state reboot ordering and provider connectivity are not covered.
+The [disposable systemd VM harness](tests/vm/README.md) covers actual installation, emergency-disable, uninstall and injected installer rollback with real systemd, NetworkManager and nftables. Its retained 36-check result is historical and its source hashes do not cover this revision; rerun it before treating it as current release evidence. The guest has no host network or filesystem shares; graphical user integration is explicitly stubbed, and installed-state reboot ordering and provider connectivity are not covered.

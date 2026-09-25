@@ -6,9 +6,7 @@ controller_user="${1:-}"
 [[ $controller_user =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "Controller user required" >&2; exit 1; }
 
 /usr/bin/omarchy-wireguard emergency-disable
-while IFS=: read -r name uuid; do
-  [[ $name == omarchy-wireguard-* ]] && nmcli connection delete uuid "$uuid" || true
-done < <(nmcli -t -f NAME,UUID connection show)
+/usr/bin/omarchy-wireguard uninstall-profiles
 
 controller_uid=$(id -u "$controller_user")
 home=$(getent passwd "$controller_user" | cut -d: -f6)

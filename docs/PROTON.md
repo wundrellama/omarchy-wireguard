@@ -72,13 +72,13 @@ If none of these is available, the panel does not show the button.
 
 ## Status and shield
 
-A NetworkManager check runs every few seconds. It finds the Proton tunnel: exactly one active `wireguard` connection named `ProtonVPN <server>` on the device `proton0`. The slower `protonvpn status` command runs every 5 seconds while the panel is open, and every 60 seconds when it is closed. It adds the location, load, and protocol.
+A NetworkManager check runs every few seconds. It finds the Proton tunnel: exactly one active `wireguard` connection named `ProtonVPN <server>` on the device `proton0`. The slower `protonvpn status` command runs every 5 seconds while the panel is open, and every 10 seconds when it is closed. It adds the location, load, and protocol.
 
-- A Proton connection shows a green check-shield. The WireGuard backend must report disabled or not installed. If the WireGuard status is unknown, the shield stays muted.
+- A Proton connection shows a green check-shield only after NetworkManager and `protonvpn status` independently report the same connection and WireGuard is freshly observed absent. An operational connection without those checks stays red and is labeled **protection not verified**.
 - A Proton connection or disconnection in progress shows an amber shield.
 - A Proton error shows a red shield.
 - If WireGuard and Proton VPN both report active, the shield is red and the panel reports a conflict. This can occur if you connect Proton VPN outside the panel.
-- A missing, failed, stale, or contradictory observation is unknown. Unknown is never shown as protected.
+- Missing, failed, stale, or contradictory evidence is never shown as protected. If NetworkManager still proves that a Proton tunnel is operational, the shield is red and labeled **protection not verified**; otherwise status is unknown and muted.
 - If `protonvpn` cannot start, the panel shows "Could not run protonvpn" and the status becomes unknown.
 
 The traffic sampler has a separate Proton mode. It reads only the `proton0` counters, and only when exactly one active connection matches the name, type, and device. It never uses other tunnels as a fallback.

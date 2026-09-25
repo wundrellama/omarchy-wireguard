@@ -14,8 +14,9 @@ The control socket accepts one newline-terminated JSON object per connection:
 {"op":"status","args":{},"request_id":"opaque"}
 ```
 
-Import accepts either a controller-owned, non-group/world-writable `path`, or
-base64 `data` plus `name`.
+Import accepts either one open regular-file descriptor passed with `SCM_RIGHTS`
+using `{"source":"fd","name":"..."}`, or base64 `data` plus `name`. Pathname
+imports are rejected so the privileged backend never resolves an untrusted path.
 Profiles must have one `Interface`, one `Peer`, DNS, an IPv4 default
 `AllowedIPs` route, only supported keys, and no hooks. This does not guarantee
 compatibility with profiles from every provider.

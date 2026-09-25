@@ -27,9 +27,7 @@ else:
     raise SystemExit("unexpected test command")
 ''')
     cli.chmod(0o755)
-    picker = commands / "omarchy-file-select"
-    picker.write_text('#!/bin/bash\nprintf "/synthetic.conf\\n"\n')
-    picker.chmod(0o755)
+    (stage / "file_picker.py").write_text('import json\nprint(json.dumps(["/synthetic.conf"]))\n')
     # Never send desktop notifications, even if a regression produces an error.
     notify = commands / "omarchy-notification-send"
     notify.write_text('#!/bin/bash\nexit 0\n')

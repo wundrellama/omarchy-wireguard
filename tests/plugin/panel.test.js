@@ -83,3 +83,7 @@ for (const [state, color] of [['connected','green'],['connecting','yellow'],['fa
 }
 assert.match(panel, /text: root.stateGlyph\s+foreground: root.stateColor/)
 assert.match(panel, /text: root.stateGlyph\s+color: root.stateColor/)
+// Every backend/file-derived review sink is rendered literally, never as rich text.
+assert.match(panel, /text: String\(modelData\)[\s\S]{0,180}textFormat: Text\.PlainText/)
+assert.match(panel, /text: service\.status\.importReview\.message[\s\S]{0,220}textFormat: Text\.PlainText/)
+assert.match(panel, /Text \{ width: parent\.width; text: sourceName; textFormat: Text\.PlainText;/)

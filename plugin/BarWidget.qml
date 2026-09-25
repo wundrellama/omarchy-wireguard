@@ -20,7 +20,7 @@ Panel {
   // Combined VPN shield; fixtures without Proton fall back to the WireGuard status.
   readonly property var shieldInfo: service.shield || ({ state: service.status.state, vpn: service.status.state === "connected" ? "WireGuard" : "" })
   readonly property string shieldState: String(root.shieldInfo.state || "unknown")
-  readonly property var traffic: root.shieldState === "connected" ? (service.traffic || null) : null
+  readonly property var traffic: (root.shieldState === "connected" || (root.shieldState === "enabled-unverified" && root.shieldInfo.vpn === "Proton")) ? (service.traffic || null) : null
   readonly property var protonStatus: service.protonStatus || null
   readonly property bool protonInstalled: !!protonStatus && protonStatus.installed === true
   readonly property bool protonCanConnect: protonInstalled && protonStatus.account !== "signed-out" && !service.busy
@@ -318,6 +318,8 @@ Panel {
               width: parent.width
               text: !root.statusKnown
                 ? "Backend status is unknown. Install or repair only if needed; authorization is required."
+                : service.status.setupRequired
+                ? "The installed backend is older than this panel. Repair it to apply the current security and protocol updates."
                 : service.status.installed
                 ? "Import full-tunnel WireGuard profiles individually, as a directory, or as a ZIP. Split routes are not supported."
                 : "Install the privileged WireGuard backend first, then import a compatible WireGuard profile."
@@ -329,7 +331,7 @@ Panel {
             Flow {
               width: parent.width
               spacing: Style.space(6)
-              Button { visible: !root.statusKnown || !service.status.installed; enabled: service.active === true && !service.busy && !!service.installScriptPath && !!service.currentUser; focusable: true; text: root.statusKnown ? "Install backend" : "Install / repair backend"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.installBackend() }
+              Button { visible: !root.statusKnown || !service.status.installed || service.status.setupRequired; enabled: service.active === true && !service.busy && !!service.installScriptPath && !!service.currentUser; focusable: true; text: !root.statusKnown ? "Install / repair backend" : service.status.setupRequired ? "Repair backend" : "Install backend"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.installBackend() }
               Button { focusable: true; text: "Open TorGuard generator"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.openGenerator() }
             }
           }
@@ -345,6 +347,7 @@ Panel {
                 required property var modelData
                 width: parent.width
                 text: String(modelData)
+                textFormat: Text.PlainText
                 color: root.errorColor
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -361,6 +364,7 @@ Panel {
             Text {
               width: parent.width
               text: service.status.importReview.message || "Give each source a display label (up to 128 printable characters)."
+              textFormat: Text.PlainText
               color: root.warning
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -381,7 +385,7 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
             Button { visible: service.status.installed && service.status.state === "failed"; focusable: true; text: "Retry"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.retry() }
-            Button { visible: !root.statusKnown && service.disconnectRecovery === true; enabled: !service.busy; focusable: true; text: "Disconnect"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.disconnect() }
+            Button { visible: !root.statusKnown && service.wireGuardRecovery === true; enabled: !service.busy; focusable: true; text: "Disconnect"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.disconnect() }
             Button { visible: !root.statusKnown; focusable: true; text: "Refresh status"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.refresh() }
           }
 
@@ -456,7 +460,8 @@ Panel {
               width: parent.width
               text: Proton.summary(root.protonStatus)
               textFormat: Text.PlainText
-              color: root.protonStatus && root.protonStatus.state === "connected" ? root.success : root.dim
+              color: root.protonStatus && root.protonStatus.state === "connected"
+                ? (root.protonStatus.protection === "verified" ? root.success : root.warning) : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               wrapMode: Text.WordWrap
@@ -703,7 +708,7 @@ Panel {
     property string sourceName: ""
     width: parent ? parent.width : 0
     spacing: Style.space(4)
-    Text { width: parent.width; text: sourceName; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle }
+    Text { width: parent.width; text: sourceName; textFormat: Text.PlainText; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle }
     TextField {
       width: parent.width
       foreground: root.foreground

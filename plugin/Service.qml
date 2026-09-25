@@ -22,7 +22,9 @@ Item {
   // Proton adapter: user-session CLI only; nothing here reaches the root backend.
   readonly property var proton: protonService
   readonly property var protonStatus: protonService.status
-  readonly property var shield: Proton.shield(status, protonService.status, disconnectRecovery, wireGuardAbsent())
+  readonly property string wireGuardNmState: Proton.wireGuardObservation(protonService.nm, Date.now())
+  readonly property bool wireGuardRecovery: disconnectRecovery || wireGuardNmState === "present"
+  readonly property var shield: Proton.shield(status, protonService.status, wireGuardRecovery, wireGuardAbsent())
   property string protonQuery: ""
   readonly property var filteredCountries: Proton.filterCountries(protonService.countries, protonQuery)
   // One live Proton search: countries, cities and servers from the cached index.
@@ -34,7 +36,7 @@ Item {
   property var lastConnection: null
   property var pendingConnection: null
   property var queuedConnection: null
-  readonly property var quickAction: Proton.quickAction({ wg: status, recovery: disconnectRecovery, wgAbsent: wireGuardAbsent(), proton: protonService.status, switching: switchPhase !== "" || !!switchRequest, busy: busy, protonBusy: protonService.busy, record: lastConnection, locations: status.locations || [], mru: catalog.mru || [], countries: protonService.countries })
+  readonly property var quickAction: Proton.quickAction({ wg: status, recovery: wireGuardRecovery, wgAbsent: wireGuardAbsent(), proton: protonService.status, switching: switchPhase !== "" || !!switchRequest, busy: busy, protonBusy: protonService.busy, record: lastConnection, locations: status.locations || [], mru: catalog.mru || [], countries: protonService.countries })
   readonly property var protonCities: protonService.cities
   readonly property string protonCountriesError: protonService.countriesError
   readonly property string protonCitiesError: protonService.citiesError
@@ -47,6 +49,7 @@ Item {
   property double protonReleasedAfter: 0
   property double lastStatusAt: 0
   property int statusRevision: 0
+  property double wireGuardObservationAfter: 0
   property bool disconnectRecovery: false
   property var settings: ({})
   property string installScriptPath: ""
@@ -70,6 +73,7 @@ Item {
   property bool handshakeFailureConfirmationPending: false
   property string pendingAction: ""
   property string pickerMode: ""
+  readonly property string pickerHelper: decodeURIComponent(String(Qt.resolvedUrl("file_picker.py")).replace(/^file:\/\//, ""))
 
   property string diagnosticsText: ""
   property var catalog: ({ ok: true, locations: [] })
@@ -104,6 +108,8 @@ Item {
     if (!active || busy || actionProcess.running) return
     if (status.state === "unknown" && args[0] !== "disconnect") return
     pendingAction = name
+    if (args[0] === "connect" || args[0] === "disconnect" || args[0] === "retry")
+      wireGuardObservationAfter = Date.now()
     actionMessage = name
     statusRevision++
     markCliUnavailable("Action in progress; awaiting status")
@@ -210,15 +216,23 @@ Item {
     pendingConnection = null
   }
 
-  // The backend CLI reports this when its socket is absent; no WireGuard intent can exist.
+  // Transport failure is not absence. A fresh NetworkManager observation must
+  // independently prove that no managed WireGuard connection is active.
   function wireGuardAbsent() {
-    return status.state === "unknown" && /not installed or running/.test(lastError) && !disconnectRecovery
+    return Proton.wireGuardObservation(protonService.nm, Date.now()) === "absent"
+      && Number(protonService.nm.at) > wireGuardObservationAfter
+      && !disconnectRecovery
   }
 
   function connectProton(choice) {
     if (!active || busy) return
     if (!Proton.connectArgs(choice)) { actionError = "Invalid Proton VPN selection"; return }
-    if (Proton.wireGuardActive(status, disconnectRecovery)) {
+    var observation = Proton.wireGuardObservation(protonService.nm, Date.now())
+    if (observation === "present" && !Proton.wireGuardActive(status, disconnectRecovery)) {
+      actionError = "WireGuard activity conflicts with backend status; refresh or disconnect WireGuard"
+      return
+    }
+    if (Proton.wireGuardActive(status, disconnectRecovery || observation === "present")) {
       pendingConnection = null
       switchRequest = { target: "proton", choice: choice, label: Proton.choiceLabel(choice) }
       return
@@ -361,7 +375,7 @@ Item {
       abortSwitch("Proton VPN did not report Disconnected; WireGuard was not started")
   }
 
-  function disconnect() { if (status.state !== "unknown" || disconnectRecovery) runAction("Disconnecting", ["disconnect"]) }
+  function disconnect() { if (status.state !== "unknown" || disconnectRecovery || wireGuardRecovery) runAction("Disconnecting", ["disconnect"]) }
   function retry() { runAction("Retrying", ["retry"]) }
 
 
@@ -369,9 +383,29 @@ Item {
     if (!active || status.state === "unknown" || pickerProcess.running || busy) return
     pickerMode = directory === true ? "directory" : "files"
     pickerProcess.command = directory === true
-      ? ["omarchy-file-select", "--title", "Import WireGuard profile directory", "--directory"]
-      : ["omarchy-file-select", "--title", "Import WireGuard profiles", "--multiple", "--extensions", "zip conf"]
+      ? ["python3", "-B", pickerHelper, "--title", "Import WireGuard profile directory", "--directory"]
+      : ["python3", "-B", pickerHelper, "--title", "Import WireGuard profiles", "--multiple", "--extensions", "zip conf"]
     pickerProcess.running = true
+  }
+
+  function applyPickerOutput(raw) {
+    var paths = Model.parsePickerPaths(raw, pickerMode === "directory")
+    if (!paths) {
+      actionError = "File chooser returned invalid or unsafe paths"
+      importSelectionFinished()
+      return
+    }
+    // Quickshell emits exited before runningChanged. Starting synchronously
+    // here would be silently rejected because busy still includes the picker.
+    Qt.callLater(function() {
+      if (!root.active) return
+      root.importPaths = paths
+      if (root.busy || root.status.state === "unknown")
+        root.actionError = "Cannot import while busy or status is unknown; refresh and try again"
+      else
+        root.runAction("Importing profiles", ["import", "--"].concat(paths))
+      root.importSelectionFinished()
+    })
   }
 
   function submitImportReview(labels) {
@@ -695,19 +729,7 @@ Item {
         root.importSelectionFinished()
         return
       }
-      var paths = String(pickerStdout.text || "").split("\n").filter(function(path) { return path !== "" })
-      if (paths.length === 0) return
-      // Quickshell emits exited before runningChanged. Starting synchronously
-      // here would be silently rejected because busy still includes the picker.
-      Qt.callLater(function() {
-        if (!root.active) return
-        root.importPaths = paths
-        if (root.busy || root.status.state === "unknown")
-          root.actionError = "Cannot import while busy or status is unknown; refresh and try again"
-        else
-          root.runAction("Importing profiles", ["import"].concat(paths))
-        root.importSelectionFinished()
-      })
+      root.applyPickerOutput(pickerStdout.text)
     }
   }
 

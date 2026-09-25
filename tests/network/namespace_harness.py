@@ -25,8 +25,8 @@ from omarchy_wireguard.system import HostSystem, SystemFailure
 PORT = 39071
 PUBLIC4 = "198.51.100.80"
 PUBLIC6 = "2001:db8:2::80"
-LAN4 = "192.0.2.2"
-LAN6 = "2001:db8:1::2"
+LAN4 = "192.168.77.2"
+LAN6 = "fd42:1::2"
 HOST_NET = ""
 HOST_USER = ""
 CURRENT_NET = ""
@@ -207,7 +207,7 @@ def drops():
     output = json.loads(command(["nft", "-j", "list", "chain", "inet", NFT_TABLE, "output"]))
     for entry in output["nftables"]:
         rule = entry.get("rule", {})
-        if rule.get("comment") == "WireGuard fail closed":
+        if str(rule.get("comment", "")).endswith(":WireGuard fail closed"):
             for expr in rule["expr"]:
                 if "counter" in expr:
                     return expr["counter"]["packets"]
@@ -240,8 +240,8 @@ def setup(peer):
     command(["ip", "link", "set", "lo", "up"])
     command(["ip", "link", "add", "physical", "type", "veth", "peer", "name", "wire"])
     command(["ip", "link", "set", "wire", "netns", str(peer.proc.pid)])
-    command(["ip", "addr", "add", "192.0.2.1/24", "dev", "physical"])
-    command(["ip", "-6", "addr", "add", "2001:db8:1::1/64", "dev", "physical", "nodad"])
+    command(["ip", "addr", "add", "192.168.77.1/24", "dev", "physical"])
+    command(["ip", "-6", "addr", "add", "fd42:1::1/64", "dev", "physical", "nodad"])
     command(["ip", "link", "set", "physical", "up"])
     peer.ip("link", "set", "lo", "up")
     peer.ip("addr", "add", LAN4 + "/24", "dev", "wire")
@@ -295,7 +295,7 @@ def inner(inject_failure):
         context = FirewallContext(tunnel_interface="wgtest", endpoints=((LAN4, 51820),),
                                   wireguard_fwmark=WIREGUARD_FWMARK,
                                   physical_interfaces=("physical",),
-                                  lan_prefixes=("192.0.2.0/24", "2001:db8:1::/64"))
+                                  lan_prefixes=("192.168.77.0/24", "fd42:1::/64"))
         rules = render(context)
         command(["nft", "-c", "-f", "-"], rules)
         check("real_render_passes_nft_check", True)

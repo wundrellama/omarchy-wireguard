@@ -121,7 +121,7 @@ assert.equal(act({ wg: { state: 'unknown' }, wgAbsent: true, proton: { installed
 function service() {
   const log = [], queue = [], writes = []
   const s = { Model, Proton, Date, JSON, log, writes, queue, active: true, status: Model.unknownStatus(),
-    catalog: { locations: [], mru: [] }, disconnectRecovery: false, lastStatusAt: 0, closedRefreshIntervalSec: 30, panelOpen: true,
+    catalog: { locations: [], mru: [] }, disconnectRecovery: false, wireGuardRecovery: false, wireGuardObservationAfter: 0, lastStatusAt: 0, closedRefreshIntervalSec: 30, panelOpen: true,
     lastError: '', actionError: '', pendingAction: '', actionMessage: '', refreshing: false, statusRevision: 0,
     sawFirstStatus: false, previousState: '', previousPaused: false, failureNotificationShown: false,
     handshakeFailureConfirmationPending: false, importPaths: [], currentUser: 'tester', installScriptPath: '/not/executed',

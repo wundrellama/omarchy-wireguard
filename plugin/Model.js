@@ -85,10 +85,13 @@ function parseStatus(raw) {
   var normalizedState = normalizeState(first(parsed, ["mode", "state", "status"], ""), enabled, verified, paused)
   if (normalizedState === "unknown") return unknownStatus("Unrecognized or incomplete backend status")
   var lastError = text(first(parsed, ["reason", "message", "last_error", "lastError"], ""))
+  var protocolVersion = Number(first(parsed, ["protocol_version", "protocolVersion"], 0)) || 0
   return {
     ok: true,
     installed: first(parsed, ["installed", "backend_installed", "backendInstalled"], true) !== false,
-    setupRequired: first(parsed, ["setup_required", "setupRequired"], false) === true || setup.required === true,
+    setupRequired: first(parsed, ["setup_required", "setupRequired"], false) === true || setup.required === true || protocolVersion < 2,
+    backendVersion: text(first(parsed, ["backend_version", "backendVersion"], "")),
+    protocolVersion: protocolVersion,
     enabled: enabled,
     verified: verified,
     paused: paused || normalizedState === "paused",
@@ -249,7 +252,19 @@ function reviewComplete(candidates, labels) {
 }
 
 function importReviewArgs(paths, labels) {
-  return ["import"].concat(paths).concat(["--labels", JSON.stringify(labels)])
+  return ["import", "--labels", JSON.stringify(labels), "--"].concat(paths)
+}
+
+function parsePickerPaths(raw, directory) {
+  var paths
+  try { paths = JSON.parse(text(raw)) } catch (error) { return null }
+  if (!Array.isArray(paths) || paths.length < 1 || paths.length > 512) return null
+  if (directory === true && paths.length !== 1) return null
+  for (var i = 0; i < paths.length; i++) {
+    if (typeof paths[i] !== "string" || paths[i].charAt(0) !== "/" || paths[i].length > 4096
+        || /[\u0000\r\n]/.test(paths[i])) return null
+  }
+  return paths
 }
 
 function connectArgs(location) {

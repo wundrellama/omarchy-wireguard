@@ -77,6 +77,13 @@ assert.equal(typeof service(true).checkLaunches, 'function', 'launch check missi
   assert.equal(s.countriesError, 'Could not run protonvpn'); assert.equal(s.citiesError, 'Could not run protonvpn')
   assert.equal(s.busy, false); assert.equal(s.action, '')
 }
+{ // NetworkManager recovery polling is independent of Proton CLI installation.
+  const s = service(true); s.installed = false; s.refresh()
+  assert.equal(s.nmProcess.running, true)
+  assert.deepEqual(s.nmProcess.command, ['nmcli','-t','-f','NAME,UUID,TYPE,DEVICE,STATE','connection','show','--active'])
+  assert.equal(s.statusProcess.running, false)
+  assert.match(source, /running: root\.active\n\s+onTriggered: if \(!nmProcess\.running\)/)
+}
 { // Running, exited and abandoned processes are never reported as launch failures.
   const s = service(true); s.connect({kind:'fastest'}); s.checkLaunches(); s.flush()
   assert.equal(s.action, 'connect'); assert.deepEqual(s.done, [])

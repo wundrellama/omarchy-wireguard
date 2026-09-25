@@ -1,10 +1,10 @@
 # Disposable actual-systemd VM lifecycle harness
 
-## Status: 36 checks passed
+## Status: historical 36-check result; current revision not rerun
 
-The completed run (`observed-passed.json`) booted systemd 261.3 as PID1 with real D-Bus, NetworkManager, systemd-resolved, nftables and WireGuard kernel modules. The unmodified production installer, emergency-disable command and uninstaller executed successfully. An explicitly injected installer failure exercised rollback through real systemd dependency handling.
+The retained run (`observed-passed.json`) booted systemd 261.3 as PID1 with real D-Bus, NetworkManager, systemd-resolved, nftables and WireGuard kernel modules. The production installer, emergency-disable command and uninstaller from that snapshot executed successfully. An explicitly injected installer failure exercised rollback through real systemd dependency handling. Its recorded production-source hashes no longer match the current revision, so this result is historical evidence only.
 
-NetworkManager kept the same PID and InvocationID throughout installation, emergency-disable, uninstall and rollback. An unrelated NM profile's configuration and an unrelated nft table remained intact. The installed daemon answered an unprivileged controller's socket request. The runner verified 36 assertion markers, a matching structured success result, guest exit zero and QEMU exit zero; it does not accept QEMU exit alone. The parent verified every recorded production source hash against the current checkout.
+NetworkManager kept the same PID and InvocationID throughout that run's installation, emergency-disable, uninstall and rollback. An unrelated NM profile's configuration and an unrelated nft table remained intact. The installed daemon answered an unprivileged controller's socket request. The runner verified 36 assertion markers, a matching structured success result, guest exit zero and QEMU exit zero; it does not accept QEMU exit alone. At the time of that run, the parent verified every recorded production source hash against its checkout.
 
 ## Reproduce
 

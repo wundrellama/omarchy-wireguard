@@ -1,10 +1,14 @@
 import io
+import multiprocessing
+import os
 import stat
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
+import omarchy_wireguard.importer as importer
 from omarchy_wireguard.importer import ImportFailure, expand_archives, parse_config, parse_profiles, read_path
 
 
@@ -22,6 +26,56 @@ PersistentKeepalive = 4
 
 
 class ImporterTests(unittest.TestCase):
+    def test_source_descriptor_reads_the_opened_regular_file(self):
+        self.assertTrue(hasattr(importer, "read_source_fd"))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "home.conf"
+            path.write_text(CONFIG)
+            path.chmod(0o600)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                path.rename(path.with_suffix(".old"))
+                path.write_text("replacement")
+                files = importer.read_source_fd(descriptor, "home.conf", os.getuid())
+            finally:
+                os.close(descriptor)
+            self.assertEqual(files, [("home.conf", CONFIG.encode())])
+
+    def test_source_descriptor_rejects_fifo_before_reading(self):
+        self.assertTrue(hasattr(importer, "read_source_fd"))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pipe.conf"
+            os.mkfifo(path, 0o600)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            try:
+                with self.assertRaisesRegex(ImportFailure, "regular"):
+                    importer.read_source_fd(descriptor, "pipe.conf", os.getuid())
+            finally:
+                os.close(descriptor)
+
+    def test_fifo_path_rejection_never_blocks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pipe.conf"
+            os.mkfifo(path, 0o600)
+            queue = multiprocessing.Queue()
+
+            def read_fifo():
+                try:
+                    read_path(str(path))
+                except Exception as exc:
+                    queue.put(type(exc).__name__)
+
+            process = multiprocessing.Process(target=read_fifo)
+            process.start()
+            process.join(0.5)
+            try:
+                self.assertFalse(process.is_alive(), "FIFO open blocked before type validation")
+                self.assertEqual(queue.get(timeout=1), "ImportFailure")
+            finally:
+                if process.is_alive():
+                    process.terminate()
+                process.join()
+
     def test_parses_endpoint_location_and_forces_keepalive(self):
         profile = parse_config("us-new-york-12.conf", CONFIG)
         self.assertEqual((profile.country, profile.city), ("United States", "New York"))
@@ -94,6 +148,26 @@ class ImporterTests(unittest.TestCase):
             (nested / "jp-tokyo.conf").write_text(CONFIG)
             files = read_path(temporary)
             self.assertEqual(files[0][0], "region/jp-tokyo.conf")
+
+    def test_directory_budget_counts_every_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index in range(3):
+                (root / f"ignored-{index}.txt").write_text("ignored")
+            (root / "profile.conf").write_text(CONFIG)
+            with patch.object(importer, "MAX_TRAVERSAL", 3, create=True), \
+                    self.assertRaisesRegex(ImportFailure, "too many"):
+                read_path(temporary)
+
+    def test_zip_entry_limit_is_checked_before_zipfile_construction(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            for index in range(4):
+                zipped.writestr(f"ignored-{index}.txt", b"")
+        with patch.object(importer, "MAX_FILES", 3), \
+                patch.object(importer.zipfile, "ZipFile", side_effect=AssertionError("parser reached")), \
+                self.assertRaisesRegex(ImportFailure, "too many"):
+            expand_archives([("many.zip", archive.getvalue())])
 
     def test_rejects_bad_endpoint_without_exposing_secret(self):
         with self.assertRaisesRegex(ImportFailure, "invalid endpoint") as raised:

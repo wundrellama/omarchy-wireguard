@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "wundrellama.wireguard",
   "name": "WireGuard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "wundrellama",
   "license": "MIT",
   "description": "Named WireGuard profiles, connection status and traffic statistics for Omarchy.",

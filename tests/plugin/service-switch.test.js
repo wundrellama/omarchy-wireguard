@@ -16,12 +16,12 @@ function service() {
     sawFirstStatus:false, previousState:'', previousPaused:false, failureNotificationShown:false,
     handshakeFailureConfirmationPending:false, importPaths:[], currentUser:'tester', installScriptPath:'/not/executed',
     switchRequest:null, switchTarget:null, switchPhase:'', switchStartedAt:0, wgReleasedAfter:0, protonReleasedAfter:0,
-    pendingConnection:null, lastConnection:null, lastConnectionHelper:'/not/executed',
+    pendingConnection:null, lastConnection:null, lastConnectionHelper:'/not/executed', wireGuardObservationAfter:0,
     Qt:{callLater(f){queue.push(f)}},
     Quickshell:{execDetached(){throw Error('inactive detached process')}},
     delayedRefresh:{restart(){}}, handshakeFailureNotificationDelay:{restart(){},stop(){}}, actionFinished(){} }
   for (const name of ['statusProcess','listProcess','actionProcess','pickerProcess','installProcess','diagnosticsProcess','clipboardProcess','lastConnectionReader','lastConnectionWriter']) s[name]={running:false}
-  s.protonService = { status:{state:'disconnected',installed:true}, busy:false, nm:{ok:true,at:1,match:'none'}, cli:{ok:true,at:1,state:'disconnected'},
+  s.protonService = { status:{state:'disconnected',installed:true}, busy:false, nm:{ok:true,at:Date.now(),match:'none',wireGuard:'absent'}, cli:{ok:true,at:Date.now(),state:'disconnected'},
     connect(choice){ if (this.busy) return false; log.push(['proton', ...Proton.connectArgs(choice)]); this.busy=true; return true },
     disconnect(){ if (this.busy) return false; log.push(['proton','disconnect']); this.busy=true; return true },
     readKillSwitch(){ log.push(['proton','config','list']); return true }, refresh(){} }
@@ -101,14 +101,18 @@ const tick = () => { const t = Date.now(); while (Date.now() === t) {} }
   s.connectProton({kind:'country', country:'ch'}); s.connectProton({kind:'server', server:'--help'})
   assert.deepEqual(s.log, []); assert.match(s.actionError, /Invalid Proton/)
   // Unknown WireGuard status never lets Proton start blindly.
-  const u = service(); u.connectProton({kind:'fastest'}); assert.deepEqual(u.log, []); assert.match(u.actionError, /unknown/)
+  const u = service(); u.protonService.nm = {ok:true,at:Date.now(),match:'none',wireGuard:'unknown'}; u.connectProton({kind:'fastest'}); assert.deepEqual(u.log, []); assert.match(u.actionError, /unknown/)
   const r = service(); r.disconnectRecovery = true; r.connectProton({kind:'fastest'}); assert.equal(r.switchRequest.target, 'proton')
   for (const state of ['unknown','connecting','disconnecting']) {
     const q = service(); q.applyStatus(disabled); q.protonService.status = {state, installed:true}
     q.connectProton({kind:'fastest'}); assert.deepEqual(q.log, []); assert.match(q.actionError, /Proton VPN is/)
   }
-  const n = service(); n.markCliUnavailable('WireGuard backend is not installed or running'); n.connectProton({kind:'fastest'})
-  assert.deepEqual(n.log, [['proton','connect']])
+  const n = service(); n.markCliUnavailable('WireGuard backend is not installed or running'); n.protonService.nm = {ok:true,at:Date.now(),match:'none',wireGuard:'unknown'}; n.connectProton({kind:'fastest'})
+  assert.deepEqual(n.log, []); assert.match(n.actionError, /unknown/)
+  const a = service(); a.markCliUnavailable('WireGuard backend is not installed or running'); a.protonService.nm = {ok:true,at:Date.now(),match:'none',wireGuard:'absent'}; a.connectProton({kind:'fastest'})
+  assert.deepEqual(a.log, [['proton','connect']])
+  const c = service(); c.applyStatus(disabled); c.protonService.nm = {ok:true,at:Date.now(),match:'none',wireGuard:'present'}; c.connectProton({kind:'fastest'})
+  assert.deepEqual(c.log, []); assert.match(c.actionError, /WireGuard.*active|conflict/i)
 }
 
 // ---- Proton -> WireGuard ----------------------------------------------------

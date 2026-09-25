@@ -1,9 +1,12 @@
 import base64
 import io
+import os
+import tempfile
 import unittest
 import warnings
 import zipfile
 from dataclasses import replace
+from pathlib import Path
 
 from omarchy_wireguard.controller import Controller, RequestFailure, network_context
 from omarchy_wireguard.nftables import FirewallContext
@@ -60,6 +63,12 @@ class FakeSystem:
         self.restored_dns = []
         self.fail_dns_restore = False
         self.fail_deactivate = False
+        self.fail_quarantine = False
+
+    def apply_quarantine(self, timeout=10):
+        self.events.append("quarantine")
+        if self.fail_quarantine:
+            raise SystemFailure("quarantine failed")
 
     def inspect_firewall_context(self, timeout=10):
         return FirewallContext(lan_prefixes=("192.168.1.0/24",), physical_interfaces=("eth0",),
@@ -155,6 +164,39 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(profile["role"], "internet-exit")
         self.assertEqual((profile["country"], profile["city"]), ("", ""))
 
+    def test_path_import_is_rejected_before_side_effects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "home.conf"
+            path.write_text(IMPORT_CONFIG)
+            path.chmod(0o600)
+            with self.assertRaisesRegex(RequestFailure, "descriptor"):
+                self.controller.handle("import", {
+                    "path": str(path),
+                    "labels": {"home.conf": "Home exit"},
+                })
+        self.assertEqual(self.system.imported, [])
+
+    def test_descriptor_import_uses_the_opened_object(self):
+        controller = Controller(self.store, self.system, controller_uid=os.getuid(),
+                                clock=lambda: self.now, monotonic=lambda: self.now,
+                                sleeper=self._sleep)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "home.conf"
+            path.write_text(IMPORT_CONFIG)
+            path.chmod(0o600)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                path.rename(path.with_suffix(".old"))
+                path.write_text("replacement")
+                result = controller.handle("import", {
+                    "source": "fd", "name": "home.conf",
+                    "labels": {"home.conf": "Home exit"},
+                }, source_fd=descriptor)
+            finally:
+                os.close(descriptor)
+        self.assertTrue(result["imported"])
+        self.assertEqual(self.system.imported[0][1].label, "Home exit")
+
     def test_successful_connect_updates_mru_and_persistence(self):
         result = self.controller.connect({"city": "Japan/Tokyo"})
         self.assertEqual(result["mode"], "connecting")
@@ -163,6 +205,8 @@ class ControllerTests(unittest.TestCase):
         self.controller.tick()
         result = self.controller.status({})
         self.assertEqual(result["mode"], "connected")
+        self.assertEqual(result["backend_version"], "0.2.0")
+        self.assertEqual(result["protocol_version"], 2)
         self.assertEqual(self.controller.mru, ["japan-tokyo-1"])
         self.assertTrue(self.store.values["state.json"]["enabled"])
         self.assertEqual(self.system.firewalls[-1].tunnel_interface, "wg0")
@@ -186,6 +230,24 @@ class ControllerTests(unittest.TestCase):
         connected_firewall = max(index for index, event in enumerate(self.system.events)
                                  if event == "firewall")
         self.assertLess(connected_firewall, tunnel_dns)
+
+    def test_connect_requires_quarantine_before_enabled_intent_or_deactivation(self):
+        self.system.fail_quarantine = True
+
+        with self.assertRaisesRegex(SystemFailure, "quarantine failed"):
+            self.controller.connect({"profile": PROFILE["id"]})
+
+        self.assertFalse(self.controller.enabled)
+        self.assertEqual(self.controller.mode, "disabled")
+        self.assertEqual(self.system.deactivations, 0)
+        self.assertNotIn("state.json", self.store.values)
+
+    def test_connect_installs_quarantine_before_disrupting_the_direct_path(self):
+        self.controller.connect({"profile": PROFILE["id"]})
+
+        self.assertIn("quarantine", self.system.events)
+        self.assertLess(self.system.events.index("quarantine"), self.system.events.index("firewall"))
+        self.assertTrue(self.store.values["state.json"]["enabled"])
 
     def test_transient_verification_failure_recovers_within_city_budget(self):
         transient = Verification(False, {"handshake_fresh": False}, "handshake not ready")
@@ -307,9 +369,11 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(enabled_system.removals, 0)
 
     def test_controller_rejects_malformed_existing_state(self):
-        store = MemoryStore({"profiles.json": [dict(PROFILE)], "state.json": {}})
-        with self.assertRaises(RequestFailure):
-            Controller(store, FakeSystem())
+        for state in ({}, {"enabled": True, "target": "", "mru": []}):
+            with self.subTest(state=state):
+                store = MemoryStore({"profiles.json": [dict(PROFILE)], "state.json": state})
+                with self.assertRaises(RequestFailure):
+                    Controller(store, FakeSystem())
         store = MemoryStore({"profiles.json": [dict(PROFILE)],
                              "dns.json": [["eth0;evil", ["~."], True]]})
         with self.assertRaises(RequestFailure):
@@ -558,6 +622,21 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(RequestFailure):
             network_context({"alfred": {"interface": "wg-any", "endpoints": [], "routes": []}},
                             FirewallContext())
+
+    def test_alfred_routes_are_private_and_never_default_equivalent(self):
+        accepted = network_context({
+            "alfred": {"interface": "alfred-vpn", "endpoints": [],
+                       "routes": ["10.20.0.0/16", "192.168.50.0/24", "fd42::/64"]},
+        }, FirewallContext())
+        self.assertEqual(accepted.alfred_routes,
+                         ("10.20.0.0/16", "192.168.50.0/24", "fd42::/64"))
+
+        for route in ("0.0.0.0/0", "::/0", "8.8.8.0/24", "2001:4860::/32",
+                      "127.0.0.0/8", "169.254.0.0/16", "fe80::/10"):
+            with self.subTest(route=route), self.assertRaisesRegex(RequestFailure, "private"):
+                network_context({
+                    "alfred": {"interface": "alfred-vpn", "endpoints": [], "routes": [route]},
+                }, FirewallContext())
 
 
 if __name__ == "__main__":

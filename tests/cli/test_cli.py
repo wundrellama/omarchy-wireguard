@@ -3,6 +3,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,10 +45,15 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, 2)
 
     def test_import_personal_label_without_overwriting_network_policy(self):
-        call = self.run_cli("import", "/example/personal.conf", "--label", "Personal exit")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "personal.conf"
+            path.write_text("test fixture\n")
+            path.chmod(0o600)
+            call = self.run_cli("import", str(path), "--label", "Personal exit")
         call.assert_called_once_with("import", {
-            "path": "/example/personal.conf", "labels": {"personal.conf": "Personal exit"},
-        })
+            "data": cli.base64.b64encode(b"test fixture\n").decode("ascii"), "name": "personal.conf",
+            "labels": {"personal.conf": "Personal exit"},
+        }, source_fd=None)
 
     def test_label_rejects_ambiguous_input_before_staging_or_contacting_daemon(self):
         for paths in (["one.conf", "two.conf"], ["bundle.zip"], ["directory"]):
@@ -59,10 +65,31 @@ class CliTests(unittest.TestCase):
                 call.assert_not_called()
 
     def test_batch_labels_are_forwarded_as_a_json_object(self):
-        call = self.run_cli("import", "/example/bundle.zip", "--labels", '{"personal.conf":"Personal"}')
-        call.assert_called_once_with("import", {
-            "path": "/example/bundle.zip", "labels": {"personal.conf": "Personal"},
-        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bundle.zip"
+            with cli.zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("personal.conf", "test fixture\n")
+            path.chmod(0o600)
+            call = self.run_cli("import", str(path), "--labels", '{"personal.conf":"Personal"}')
+        operation, arguments = call.call_args.args
+        self.assertEqual(operation, "import")
+        self.assertEqual(arguments["name"], "bundle.zip")
+        self.assertEqual(arguments["labels"], {"personal.conf": "Personal"})
+        self.assertIn("data", arguments)
+        self.assertEqual(call.call_args.kwargs, {"source_fd": None})
+        with cli.zipfile.ZipFile(io.BytesIO(cli.base64.b64decode(arguments["data"]))) as archive:
+            self.assertEqual(archive.read("personal.conf"), b"test fixture\n")
+
+    def test_large_import_uses_descriptor_transport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large.conf"
+            path.write_bytes(b"x" * (cli.MAX_INLINE_SOURCE + 1))
+            path.chmod(0o600)
+            call = self.run_cli("import", str(path))
+        operation, arguments = call.call_args.args
+        self.assertEqual(operation, "import")
+        self.assertEqual(arguments, {"source": "fd", "name": "large.conf"})
+        self.assertIsInstance(call.call_args.kwargs["source_fd"], int)
 
     def test_invalid_metadata_is_rejected_before_contacting_daemon(self):
         for option in ("labels", "locations"):
@@ -78,14 +105,15 @@ class CliTests(unittest.TestCase):
             cli.parser().parse_args(["import", "one.conf", "--label", "One", "--labels", "{}"])
         self.assertEqual(raised.exception.code, 2)
 
-    def test_single_import_does_not_resolve_symlink_past_backend_safety_check(self):
+    def test_single_import_rejects_symlink_before_contacting_backend(self):
         with tempfile.TemporaryDirectory() as directory:
             original = Path(directory) / "original.conf"
             original.write_text("test fixture\n")
             link = Path(directory) / "link.conf"
             link.symlink_to(original)
-            call = self.run_cli("import", str(link), "--label", "Personal")
-            self.assertEqual(call.call_args.args[1]["path"], str(link))
+            with patch.object(cli, "call") as call, self.assertRaisesRegex(cli.CliError, "opened safely"):
+                cli.import_profiles([str(link)], None, "Personal")
+            call.assert_not_called()
 
     def test_duplicate_basenames_are_rejected_not_silently_renamed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -101,6 +129,27 @@ class CliTests(unittest.TestCase):
                 with self.assertRaisesRegex(cli.CliError, "duplicate source filename"):
                     cli.stage_files(files)
             self.assertEqual(list(root.glob("omarchy-wireguard-*")), [])
+
+    def test_multifile_staging_reads_held_descriptors_not_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "one.conf"
+            second = root / "two.conf"
+            first.write_text("one\n")
+            second.write_text("two\n")
+            first.chmod(0o600)
+            second.chmod(0o600)
+            with patch.object(cli.zipfile.ZipFile, "write",
+                              side_effect=AssertionError("pathname reopened")):
+                staged, name = cli.stage_files([str(first), str(second)])
+            try:
+                self.assertEqual(name, "upload.zip")
+                staged.seek(0)
+                with cli.zipfile.ZipFile(staged) as archive:
+                    self.assertEqual(archive.read("one.conf"), b"one\n")
+                    self.assertEqual(archive.read("two.conf"), b"two\n")
+            finally:
+                staged.close()
 
 
 if __name__ == "__main__":

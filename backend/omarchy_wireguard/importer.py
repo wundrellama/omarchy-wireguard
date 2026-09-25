@@ -1,16 +1,21 @@
 import base64
 import configparser
+import fcntl
 import io
 import ipaddress
 import os
 import re
 import stat
+import struct
 import zipfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 from .constants import MAX_ARCHIVE, MAX_FILES, MAX_MEMBER
+
+MAX_TRAVERSAL = 1024
+MAX_ZIP_METADATA = 1024 * 1024
 
 
 class ImportFailure(ValueError):
@@ -67,7 +72,7 @@ def read_path(path_text: str, owner_uid: int | None = None) -> list[tuple[str, b
     owner_uid = os.geteuid() if owner_uid is None else owner_uid
     path = Path(path_text)
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
         raise ImportFailure("source cannot be opened without following links") from exc
     try:
@@ -88,16 +93,47 @@ def read_path(path_text: str, owner_uid: int | None = None) -> list[tuple[str, b
             os.close(descriptor)
 
 
+def read_source_fd(descriptor: int, name: str, owner_uid: int) -> list[tuple[str, bytes]]:
+    if not isinstance(name, str) or not name or PurePosixPath(name).name != name:
+        raise ImportFailure("source name must be one safe filename")
+    try:
+        info = os.fstat(descriptor)
+        flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    except OSError as exc:
+        raise ImportFailure("source descriptor cannot be inspected") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ImportFailure("source descriptor must reference a regular file")
+    if info.st_uid != owner_uid or info.st_mode & 0o022:
+        raise ImportFailure("source must be owned by the controller and not group/world writable")
+    if flags & os.O_ACCMODE == os.O_WRONLY:
+        raise ImportFailure("source descriptor must be readable")
+    if info.st_size > MAX_ARCHIVE:
+        raise ImportFailure("source is too large")
+    try:
+        data = os.pread(descriptor, MAX_ARCHIVE + 1, 0)
+    except OSError as exc:
+        raise ImportFailure("source descriptor cannot be read") from exc
+    if len(data) > MAX_ARCHIVE:
+        raise ImportFailure("source is too large")
+    return [(name, data)]
+
+
 def _read_directory(directory_fd: int, owner_uid: int) -> list[tuple[str, bytes]]:
     result: list[tuple[str, bytes]] = []
     total = [0]
+    visited = [0]
 
     def walk(current_fd: int, prefix: str, depth: int) -> None:
         if depth > 8:
             raise ImportFailure("directory nesting is too deep")
-        for name in sorted(os.listdir(current_fd)):
-            if len(result) >= MAX_FILES:
-                raise ImportFailure("too many files")
+        names = []
+        with os.scandir(current_fd) as entries:
+            for entry in entries:
+                visited[0] += 1
+                if visited[0] > MAX_TRAVERSAL:
+                    raise ImportFailure("too many directory entries")
+                names.append(entry.name)
+        for name in sorted(names):
             try:
                 info = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
             except OSError as exc:
@@ -136,6 +172,8 @@ def _read_directory(directory_fd: int, owner_uid: int) -> list[tuple[str, bytes]
                     raise ImportFailure("directory payload is too large")
                 with os.fdopen(fd, "rb") as stream:
                     fd = -1
+                    if len(result) >= MAX_FILES:
+                        raise ImportFailure("too many files")
                     result.append((relative, stream.read(MAX_MEMBER + 1)))
             finally:
                 if fd >= 0:
@@ -148,18 +186,22 @@ def _read_directory(directory_fd: int, owner_uid: int) -> list[tuple[str, bytes]
     return result
 
 
-def decode_payload(args: dict, owner_uid: int | None = None) -> list[tuple[str, bytes]]:
-    allowed = {"path", "data", "name", "locations", "network", "labels"}
+def decode_payload(args: dict, owner_uid: int | None = None,
+                   source_fd: int | None = None) -> list[tuple[str, bytes]]:
+    allowed = {"source", "data", "name", "locations", "network", "labels"}
     if set(args) - allowed:
         raise ImportFailure("unknown import argument")
-    if ("path" in args) == ("data" in args):
-        raise ImportFailure("provide exactly one of path or data")
-    if "path" in args:
-        if not isinstance(args["path"], str):
-            raise ImportFailure("path must be text")
-        files = read_path(args["path"], owner_uid)
+    owner_uid = os.geteuid() if owner_uid is None else owner_uid
+    if source_fd is not None:
+        if args.get("source") != "fd" or "data" in args:
+            raise ImportFailure("descriptor import must use source=fd without data")
+        name = args.get("name", "upload.conf")
+        files = read_source_fd(source_fd, name, owner_uid)
     else:
-        if not isinstance(args["data"], str) or not isinstance(args.get("name", "upload.conf"), str):
+        if args.get("source") == "fd" or "source" in args:
+            raise ImportFailure("source descriptor is required")
+        if (not isinstance(args.get("data"), str) or
+                not isinstance(args.get("name", "upload.conf"), str)):
             raise ImportFailure("invalid payload")
         try:
             data = base64.b64decode(args["data"], validate=True)
@@ -171,11 +213,41 @@ def decode_payload(args: dict, owner_uid: int | None = None) -> list[tuple[str, 
     return expand_archives(files)
 
 
+def _preflight_zip(data: bytes) -> int:
+    minimum = 22
+    start = max(0, len(data) - (65535 + minimum))
+    index = data.rfind(b"PK\x05\x06", start)
+    while index >= start:
+        if index + minimum <= len(data):
+            try:
+                (_signature, disk, directory_disk, entries_disk, entries_total,
+                 directory_size, directory_offset, comment_size) = struct.unpack_from(
+                     "<4s4H2LH", data, index)
+            except struct.error:
+                pass
+            else:
+                if index + minimum + comment_size == len(data):
+                    if (disk or directory_disk or entries_disk != entries_total or
+                            entries_total == 0xFFFF or directory_size == 0xFFFFFFFF or
+                            directory_offset == 0xFFFFFFFF):
+                        raise ImportFailure("ZIP archive layout is unsupported")
+                    if entries_total > MAX_FILES:
+                        raise ImportFailure("archive has too many entries")
+                    if directory_size > MAX_ZIP_METADATA:
+                        raise ImportFailure("archive metadata is too large")
+                    if directory_offset + directory_size > index:
+                        raise ImportFailure("invalid ZIP archive")
+                    return entries_total
+        index = data.rfind(b"PK\x05\x06", start, index)
+    raise ImportFailure("invalid ZIP archive")
+
+
 def expand_archives(files: Iterable[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
     output: list[tuple[str, bytes]] = []
     for name, data in files:
         if name.lower().endswith(".zip") or data.startswith(b"PK\x03\x04"):
             try:
+                _preflight_zip(data)
                 with zipfile.ZipFile(io.BytesIO(data)) as archive:
                     infos = archive.infolist()
                     if len(infos) > MAX_FILES:

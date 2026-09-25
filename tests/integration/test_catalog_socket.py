@@ -69,6 +69,9 @@ class CatalogHost:
     def apply_firewall(self, context):
         self.firewalls.append(context)
 
+    def apply_quarantine(self):
+        self.firewalls.append("quarantine")
+
 
 class CatalogSocketTests(unittest.TestCase):
     def setUp(self):

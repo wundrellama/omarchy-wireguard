@@ -329,14 +329,18 @@ all of these checks:
 | `handshake_fresh` | WireGuard reports a nonzero handshake no more than 180 seconds old (WireGuard's key-rejection limit; healthy sessions rekey about every 120 seconds) |
 
 The checks validate local routing and policy state. They do not call an external
-public-IP or DNS-leak service. Firewall verification checks key invariants, not
-every rendered rule or every other firewall table on the machine.
+public-IP or DNS-leak service. Firewall verification compares every managed rule
+expression and counter presence with the canonical generated policy; it does not
+inspect unrelated firewall tables on the machine.
 
 ## Import and secret lifecycle
 
-Imports may contain one configuration, a directory, or a ZIP. Path imports must
-be owned by the controller user and not writable by group or others. The parser
-rejects symlinks, special files, traversal paths, oversized input, excessive
+Imports may contain one configuration, a directory, or a ZIP. The controller
+opens and validates the source as the unprivileged user, then sends either a
+bounded inline payload (compatible with the previous backend during upgrades)
+or an already open descriptor with `SCM_RIGHTS`; the privileged process never
+resolves a user-supplied pathname. The parser rejects symlinks, special files,
+traversal paths, oversized input, excessive
 recursion, unsupported WireGuard keys, hooks, multiple peers, and profiles
 without an IPv4 default route. Ambiguous locations require explicit review or an explicit personal-profile label before any profile is changed.
 
@@ -349,7 +353,7 @@ A successful import appends to the managed profile catalog without disconnecting
 
 New NetworkManager profiles are staged before the combined catalog is written atomically and then published in memory. Failures before catalog commit trigger cleanup of only newly created profiles, with incomplete rollback reported explicitly. If the catalog rename succeeded but directory durability could not be confirmed, the new profiles are retained and the response says to inspect the catalog before retrying. This is not a crash-atomic transaction across NetworkManager and the filesystem: abrupt termination may leave staged profiles requiring reconciliation.
 
-The optional `labels` map uses exact source filenames and permits named profiles without geographic metadata. Flat profile summaries expose the label and `internet-exit` role without configuration bodies or keys. Exact-profile selection persists as `profile:<id>`; legacy city selection still permits same-city failover. Full-tunnel restrictions remain unchanged. The native named-profile panel, private tunnels and Proton adapter are subsequent work described in [the adaptation roadmap](docs/ADAPTATION.md).
+The optional `labels` map uses exact source filenames and permits named profiles without geographic metadata. Flat profile summaries expose the label and `internet-exit` role without configuration bodies or keys. Exact-profile selection persists as `profile:<id>`; legacy city selection still permits same-city failover. The panel supports named profiles and coordinates with the Proton CLI. Full-tunnel restrictions remain unchanged; private/split tunnels remain subsequent work described in [the adaptation roadmap](docs/ADAPTATION.md).
 
 Private and preshared keys exist transiently in parser memory and a mode-`0600`
 file under `/run/omarchy-wireguard`. NetworkManager consumes that file, which is

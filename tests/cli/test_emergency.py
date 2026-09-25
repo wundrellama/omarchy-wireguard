@@ -17,6 +17,26 @@ loader.exec_module(cli)
 
 
 class EmergencyRollbackTests(unittest.TestCase):
+    def test_catalog_failure_stops_daemon_but_retains_firewall(self):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory(prefix="wireguard-emergency-") as temporary:
+            state = Path(temporary) / "state"
+            def safe_path(value):
+                return state if str(value) == "/var/lib/omarchy-wireguard" else Path(value)
+            with patch.object(cli.os, "geteuid", return_value=0), \
+                    patch.object(cli, "Path", side_effect=safe_path), \
+                    patch.object(cli, "load_owned_profiles", side_effect=cli.CliError("bad catalog")), \
+                    patch.object(cli.subprocess, "run", side_effect=run), \
+                    self.assertRaisesRegex(cli.CliError, "firewall retained"):
+                cli.emergency_disable()
+        self.assertIn(["systemctl", "disable", "--now", "omarchy-wireguard.service"], calls)
+        self.assertFalse(any(call[:2] == ["nft", "delete"] for call in calls))
+
     def invoke(self, *, nft_returncode=0, nft_output=None):
         if nft_output is None:
             nft_output = json.dumps({"nftables": [{"metainfo": {"json_schema_version": 1}}]})
@@ -53,6 +73,7 @@ class EmergencyRollbackTests(unittest.TestCase):
                 return Path(value)
             with patch.object(cli.os, "geteuid", return_value=0), \
                     patch.object(cli, "Path", side_effect=safe_path), \
+                    patch.object(cli, "load_owned_profiles", return_value=()), \
                     patch.object(cli.subprocess, "run", side_effect=run):
                 result = cli.emergency_disable()
             self.assertFalse(json.loads((state / "state.json").read_text())["enabled"])
