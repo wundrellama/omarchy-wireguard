@@ -64,7 +64,7 @@ The bar remains shield-only. The sampler needs no root access and does not chang
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/wundrellama/omarchy-wireguard.git --enable
+omarchy plugin add https://dinnyt-divsud.startram.io/git/omarchy-wireguard.git --enable
 ```
 
 1. Click the bar shield.
