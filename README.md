@@ -1,6 +1,6 @@
 # omarchy-wireguard
 
-A WireGuard integration for Omarchy 4.x.
+omarchy-wireguard adds a status-bar control panel and a fail-closed backend for full-tunnel WireGuard profiles on Omarchy 4.x. The panel imports named profiles, verifies local protection state, shows traffic, and coordinates switches to Proton VPN.
 
 Maintained by **wundrellama**, based on Nicolas Dorier's original omarchy-wireguard. The original MIT copyright and license are retained in [LICENSE](LICENSE).
 
