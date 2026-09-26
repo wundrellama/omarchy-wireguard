@@ -26,7 +26,7 @@ function service(launch) {
   }
   Object.defineProperty(s,'busy',{get(){ return s.actionProcess.running || s.configProcess.running }})
   Object.defineProperty(s,'status',{get(){ return Proton.buildStatus({installed:s.installed, action:s.action, nm:s.nm, cli:s.cli,
-    now:Date.now(), phase:s.phase, error:s.error, message:s.message, account:s.account}) }})
+    now:s.clock, phase:s.phase, error:s.error, message:s.message, account:s.account}) }})
   const re = /^  function (\w+)\(([^)]*)\) \{/gm; let m
   while ((m=re.exec(source))) {
     let start=re.lastIndex, depth=1, end=start
@@ -83,6 +83,13 @@ assert.equal(typeof service(true).checkLaunches, 'function', 'launch check missi
   assert.deepEqual(s.nmProcess.command, ['nmcli','-t','-f','NAME,UUID,TYPE,DEVICE,STATE','connection','show','--active'])
   assert.equal(s.statusProcess.running, false)
   assert.match(source, /running: root\.active\n\s+onTriggered: if \(!nmProcess\.running\)/)
+}
+{ // A newly stored observation advances the cached clock before status derives.
+  const s = service(true); s.clock = 1000
+  s.storeNm({ok:true,match:'none',server:'',activated:false,wireGuard:'absent'}, 2000)
+  assert.equal(s.clock, 2000)
+  assert.equal(s.nm.at, 2000)
+  assert.equal(s.status.state, 'disconnected', 'a fresh NM result must not flip through unknown')
 }
 { // Running, exited and abandoned processes are never reported as launch failures.
   const s = service(true); s.connect({kind:'fastest'}); s.checkLaunches(); s.flush()

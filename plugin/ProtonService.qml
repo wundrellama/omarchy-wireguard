@@ -48,6 +48,24 @@ Item {
     launchCheck.restart()
   }
 
+  // Advance the cached clock before publishing an observation. Otherwise an
+  // observation can look future-dated until the one-second clock timer runs.
+  function storeNm(parsed, observedAt) {
+    var at = Number(observedAt)
+    if (!isFinite(at) || at <= 0) at = Date.now()
+    clock = Math.max(clock, at)
+    parsed.at = at
+    nm = parsed
+  }
+
+  function storeCli(parsed, observedAt) {
+    var at = Number(observedAt)
+    if (!isFinite(at) || at <= 0) at = Date.now()
+    clock = Math.max(clock, at)
+    parsed.at = at
+    cli = parsed
+  }
+
   // Quickshell emits no exited signal when a command cannot be launched, so a
   // one-shot check finishes any started command that is neither running nor
   // exited. Abandoned (revision -1) commands are ignored.
@@ -60,11 +78,11 @@ Item {
       process.handledExit = true
       if (!active) continue
       if (process === probeProcess) installed = null
-      else if (process === nmProcess) { if (process.revision === generation) nm = { ok: false, at: process.startedAt, match: "none", server: "", activated: false } }
-      else if (process === statusProcess) { if (process.revision === generation) cli = { ok: false, at: process.startedAt, state: "unknown" } }
+      else if (process === nmProcess) { if (process.revision === generation) storeNm({ ok: false, match: "none", server: "", activated: false }, Date.now()) }
+      else if (process === statusProcess) { if (process.revision === generation) storeCli({ ok: false, state: "unknown" }, Date.now()) }
       else if (process === infoProcess) account = "unknown"
       else if (process === actionProcess) {
-        cli = { ok: false, at: process.startedAt, state: "unknown" }
+        storeCli({ ok: false, state: "unknown" }, Date.now())
         finishAction(action, false, failed)
       }
       else if (process === configProcess) Qt.callLater(function() { root.killSwitchRead("") })
@@ -232,8 +250,7 @@ Item {
     onExited: function(exitCode) {
       if (!root.active || !current) return
       var parsed = exitCode === 0 ? Proton.parseActive(nmOut.text) : { ok: false }
-      parsed.at = startedAt
-      root.nm = parsed
+      root.storeNm(parsed, Date.now())
       Qt.callLater(function() { root.observed() })
     }
   }
@@ -245,8 +262,7 @@ Item {
     onExited: function(exitCode) {
       if (!root.active || !current) return
       var parsed = exitCode === 0 ? Proton.parseStatus(statusOut.text) : { ok: false, state: "unknown" }
-      parsed.at = startedAt
-      root.cli = parsed
+      root.storeCli(parsed, Date.now())
       if (exitCode !== 0 && Proton.accountFromError(statusErr.text) === "signed-out") root.account = "signed-out"
       Qt.callLater(function() { root.observed() })
     }
