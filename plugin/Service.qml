@@ -24,7 +24,7 @@ Item {
   readonly property var protonStatus: protonService.status
   readonly property string wireGuardNmState: Proton.wireGuardObservation(protonService.nm, Date.now())
   readonly property bool wireGuardRecovery: disconnectRecovery || wireGuardNmState === "present"
-  readonly property var shield: Proton.shield(status, protonService.status, wireGuardRecovery, wireGuardAbsent())
+  readonly property var shield: Proton.shield(status, protonService.status, wireGuardRecovery, wireGuardNmAbsent())
   property string protonQuery: ""
   readonly property var filteredCountries: Proton.filterCountries(protonService.countries, protonQuery)
   // One live Proton search: countries, cities and servers from the cached index.
@@ -218,10 +218,16 @@ Item {
 
   // Transport failure is not absence. A fresh NetworkManager observation must
   // independently prove that no managed WireGuard connection is active.
-  function wireGuardAbsent() {
+  function wireGuardNmAbsent() {
     return Proton.wireGuardObservation(protonService.nm, Date.now()) === "absent"
       && Number(protonService.nm.at) > wireGuardObservationAfter
       && !disconnectRecovery
+  }
+
+  // Quick connect uses this narrower meaning: the backend itself is unknown,
+  // and NetworkManager independently proves that no managed tunnel is active.
+  function wireGuardAbsent() {
+    return status.state === "unknown" && wireGuardNmAbsent()
   }
 
   function connectProton(choice) {

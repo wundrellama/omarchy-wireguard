@@ -43,6 +43,16 @@ const disabled = '{"mode":"disabled","enabled":false}'
 const wgOnly = log => log.filter(x => x[0] === 'omarchy-wireguard')
 const tick = () => { const t = Date.now(); while (Date.now() === t) {} }
 
+// A normal disabled backend is available for WireGuard reconnects even though
+// NetworkManager correctly reports that no managed WireGuard tunnel is active.
+{
+  const s = service(); s.applyStatus(disabled)
+  assert.equal(s.wireGuardNmAbsent(), true)
+  assert.equal(s.wireGuardAbsent(), false)
+  s.status = Model.unknownStatus()
+  assert.equal(s.wireGuardAbsent(), true)
+}
+
 // ---- WireGuard -> Proton ----------------------------------------------------
 {
   const s = service(); s.applyStatus(enabled)
