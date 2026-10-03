@@ -91,6 +91,10 @@ systemctl() {
         self.assertNotIn("CAP_DAC_OVERRIDE", capability_line)
         self.assertNotIn("CAP_FOWNER", capability_line)
 
+    def test_daemon_outlives_user_sessions_at_shutdown(self):
+        unit = (ROOT / "packaging/systemd/omarchy-wireguard.service").read_text()
+        self.assertIn("Before=systemd-user-sessions.service", unit.splitlines())
+
     def test_upgrade_publishes_backend_last_and_restores_all_coupled_artifacts(self):
         source = (ROOT / "scripts/install-backend").read_text()
         backend_publish = source.index('mv "$stage" /usr/lib/omarchy-wireguard/backend')

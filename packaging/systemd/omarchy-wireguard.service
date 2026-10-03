@@ -2,6 +2,8 @@
 Description=Omarchy WireGuard privileged control daemon
 Requires=omarchy-wireguard-firewall.service NetworkManager.service
 After=omarchy-wireguard-firewall.service NetworkManager.service
+# Stop after user sessions so the shell never polls a stopped daemon.
+Before=systemd-user-sessions.service
 
 [Service]
 Type=simple

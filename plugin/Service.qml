@@ -70,6 +70,8 @@ Item {
   property bool previousPaused: false
   property bool sawFirstStatus: false
   property bool failureNotificationShown: false
+  // Time of the first status failure in the current run of failures, or 0.
+  property double statusFailedAt: 0
   property bool handshakeFailureConfirmationPending: false
   property string pendingAction: ""
   property string pickerMode: ""
@@ -495,6 +497,7 @@ Item {
     previousState = merged.state
     previousPaused = merged.paused
     sawFirstStatus = true
+    statusFailedAt = 0
     lastStatusAt = Date.now()
     disconnectRecovery = merged.enabled === true || merged.state === "connected"
     status = merged
@@ -508,6 +511,25 @@ Item {
     var next = Model.mergeStatusCatalog(Model.unknownStatus(lastError), catalog)
     next.importReview = status.importReview || {}
     status = next
+  }
+
+  // A single failed status command is not reported. The backend stops during
+  // shutdown and restarts during upgrades, so the failure must persist for a
+  // later poll at least 10 s after the first one.
+  function statusCommandFailed(error) {
+    markCliUnavailable(error)
+    if (!sawFirstStatus) {
+      previousState = "failed"
+      return
+    }
+    var now = Date.now()
+    if (!statusFailedAt) {
+      statusFailedAt = now
+      return
+    }
+    if (previousState === "failed" || now - statusFailedAt < 10000) return
+    notify("WireGuard status failed", error, "critical")
+    previousState = "failed"
   }
 
   function expireStatus() {
@@ -649,10 +671,7 @@ Item {
       root.refreshing = false
       if (exitCode === 0) root.applyPoll(statusStdout.text, startedAt, revision)
       else {
-        var error = String(statusStderr.text || statusStdout.text || "WireGuard backend unavailable").trim()
-        root.markCliUnavailable(error)
-        if (root.sawFirstStatus && root.previousState !== "failed") root.notify("WireGuard status failed", error, "critical")
-        root.previousState = "failed"
+        root.statusCommandFailed(String(statusStderr.text || statusStdout.text || "WireGuard backend unavailable").trim())
       }
     }
   }

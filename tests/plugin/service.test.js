@@ -11,7 +11,7 @@ function service() {
     Qt:{callLater(){}}, protonService:{status:{state:'absent',installed:false}}, status:Model.unknownStatus(), catalog:{locations:[]},
     disconnectRecovery:false, wireGuardRecovery:false, statusRevision:0, lastStatusAt:0, closedRefreshIntervalSec:30, busy:false, panelOpen:false,
     lastError:'', actionError:'', pendingAction:'', actionMessage:'', refreshing:false,
-    sawFirstStatus:false, previousState:'', previousPaused:false, failureNotificationShown:false,
+    sawFirstStatus:false, previousState:'', previousPaused:false, failureNotificationShown:false, statusFailedAt:0,
     handshakeFailureConfirmationPending:false, importPaths:[], currentUser:'tester', installScriptPath:'/not/executed',
     Quickshell:{execDetached(){throw Error('inactive detached process')}},
     delayedRefresh:{restart(){}}, handshakeFailureNotificationDelay:{restart(){},stop(){}} }
@@ -74,4 +74,15 @@ for (const overrides of [{active:false},{busy:true},{installScriptPath:''},{curr
 const recovery=service(); recovery.active=true; recovery.wireGuardRecovery=true
 recovery.disconnect()
 assert.deepEqual(recovery.actionProcess.command,['omarchy-wireguard','disconnect'])
+// A short backend outage (shutdown, upgrade restart) does not notify; a persistent one notifies once.
+const outage=service(); let clock=1000000, notices=[]
+outage.Date={now:()=>clock}; outage.notify=(summary,body)=>notices.push([summary,body])
+outage.statusCommandFailed('down'); assert.equal(notices.length,0)
+outage.applyStatus('{"mode":"connected","enabled":true}')
+outage.statusCommandFailed('down'); assert.equal(outage.status.state,'unknown'); assert.equal(notices.length,0)
+clock+=5000; outage.statusCommandFailed('down'); assert.equal(notices.length,0)
+outage.applyStatus('{"mode":"connected","enabled":true}'); assert.equal(outage.statusFailedAt,0)
+clock+=30000; outage.statusCommandFailed('down'); assert.equal(notices.length,0)
+clock+=30000; outage.statusCommandFailed('down'); assert.deepEqual(notices,[['WireGuard status failed','down']])
+clock+=30000; outage.statusCommandFailed('down'); assert.equal(notices.length,1)
 console.log('service tests passed')
