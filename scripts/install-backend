@@ -173,8 +173,12 @@ backup_config=""
 backup_networkmanager_dropin=""
 
 home=$(getent passwd "$controller_user" | cut -d: -f6)
-runuser -u "$controller_user" -- env HOME="$home" USER="$controller_user" \
+# The backend is committed; a desktop integration failure must not report the
+# installation as failed.
+if ! runuser -u "$controller_user" -- env HOME="$home" USER="$controller_user" \
   XDG_RUNTIME_DIR="/run/user/$controller_uid" OMARCHY_PATH=/usr/share/omarchy \
-  /usr/lib/omarchy-wireguard/integrate-user install
+  /usr/lib/omarchy-wireguard/integrate-user install; then
+  echo "omarchy-wireguard: warning: backend installed, but the menu and bar integration failed" >&2
+fi
 
 echo "WireGuard backend installed for $controller_user"

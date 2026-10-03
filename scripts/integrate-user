@@ -2,6 +2,18 @@
 set -euo pipefail
 
 mode="${1:-install}"
+
+# The installer runs this outside the desktop session with the packaged
+# OMARCHY_PATH. The session can run Omarchy from another checkout, and the
+# shell answers only callers that use the same path, so prefer the session's.
+session_path=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^OMARCHY_PATH=//p' | tail -n1) || true
+if [[ -n $session_path && -f $session_path/shell/shell.qml ]]; then
+  export OMARCHY_PATH=$session_path
+fi
+if [[ -n ${OMARCHY_PATH:-} && -d $OMARCHY_PATH/bin ]]; then
+  export PATH="$OMARCHY_PATH/bin:$PATH"
+fi
+
 extension="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc"
 mkdir -p "$(dirname "$extension")"
 [[ -f $extension ]] || printf '{\n}\n' >"$extension"
@@ -44,6 +56,10 @@ temporary.replace(path)
 PY
 
 if [[ $mode == install ]]; then
-  omarchy bar move wundrellama.wireguard --section right --before omarchy.network >/dev/null
+  # The bar placement is cosmetic; the plugin works without it.
+  if ! omarchy bar move wundrellama.wireguard --section right --before omarchy.network >/dev/null; then
+    echo "omarchy-wireguard: warning: could not place the bar widget;" \
+      "run: omarchy bar move wundrellama.wireguard --section right --before omarchy.network" >&2
+  fi
   omarchy menu refresh >/dev/null 2>&1 || true
 fi
