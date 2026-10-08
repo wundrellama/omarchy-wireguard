@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 import "Traffic.js" as Traffic
@@ -37,11 +38,11 @@ Panel {
   onReviewBatchKeyChanged: reviewValues = ({})
   readonly property url installScriptUrl: Qt.resolvedUrl("../scripts/install-backend")
   readonly property string installScriptPath: decodeURIComponent(String(installScriptUrl).replace(/^file:\/\//, ""))
-  readonly property color foreground: bar ? bar.foreground : ShellColor.foreground
-  readonly property color dim: themeColors.muted || ShellColor.muted
-  readonly property color success: themeColors.green || ShellColor.accent
-  readonly property color warning: themeColors.yellow || ShellColor.accent
-  readonly property color errorColor: themeColors.red || (bar ? bar.urgent : ShellColor.urgent)
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color dim: themeColors.muted || Commons.Color.muted
+  readonly property color success: themeColors.green || Commons.Color.accent
+  readonly property color warning: themeColors.yellow || Commons.Color.accent
+  readonly property color errorColor: themeColors.red || (bar ? bar.urgent : Commons.Color.urgent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var locations: service.filteredLocations
 
