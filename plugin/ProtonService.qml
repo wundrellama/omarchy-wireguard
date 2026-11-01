@@ -100,6 +100,19 @@ Item {
     if (!statusProcess.running && !actionProcess.running) start(statusProcess, ["protonvpn", "status"], 20000)
   }
 
+  // `protonvpn status` costs about 1.3 s of CPU per run, so the closed bar polls it
+  // only while it adds information: a Proton tunnel exists (the shield needs fresh
+  // CLI details), or a panel, switch or action is in progress. With no Proton
+  // tunnel, nmcli alone already proves "disconnected".
+  function statusWanted() {
+    return panelOpen || phase !== "" || action !== "" || (nm.ok === true && nm.match !== "none")
+  }
+
+  function pollStatus() {
+    if (!active || installed !== true || !statusWanted()) return
+    if (!statusProcess.running && !actionProcess.running) start(statusProcess, ["protonvpn", "status"], 20000)
+  }
+
   function refreshAccount() {
     if (!active || installed !== true || infoProcess.running) return
     start(infoProcess, ["protonvpn", "info"], 20000)
@@ -218,8 +231,11 @@ Item {
     interval: root.panelOpen || root.phase !== "" ? 5000 : 10000
     repeat: true
     running: root.active && root.installed === true
-    onTriggered: if (!statusProcess.running && !actionProcess.running) root.start(statusProcess, ["protonvpn", "status"], 20000)
+    onTriggered: root.pollStatus()
   }
+  // A tunnel that appears while the panel is closed gets its details at once,
+  // not on the next 10 s tick.
+  onNmChanged: if (nm.ok === true && nm.match !== "none" && !Proton.fresh(cli, clock)) pollStatus()
 
   component Command: Process {
     property double startedAt: 0

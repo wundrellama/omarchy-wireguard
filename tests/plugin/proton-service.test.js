@@ -107,4 +107,25 @@ assert.equal(typeof service(true).checkLaunches, 'function', 'launch check missi
   s.loadServers(true); assert.deepEqual(s.serversProcess.command, ['python3', '-B', '/not/executed/proton_servers.py'])
   const n = service(true); n.installed = false; n.loadServers(true); assert.deepEqual(n.serversProcess.command, [])
 }
+{ // The closed bar skips the costly CLI status poll while nmcli shows no Proton tunnel.
+  const s = service(true); s.nm = {ok:true, at:1, match:'none'}
+  s.pollStatus(); assert.deepEqual(s.statusProcess.command, [], 'closed + no tunnel: no protonvpn status')
+  assert.equal(s.statusWanted(), false)
+  for (const [field, value] of [['panelOpen', true], ['phase', 'proton-wait'], ['action', 'connect']]) {
+    const o = service(true); o.nm = {ok:true, at:1, match:'none'}; o[field] = value
+    o.pollStatus(); assert.deepEqual(o.statusProcess.command, ['protonvpn', 'status'], field + ' keeps polling')
+  }
+  const t = service(true); t.nm = {ok:true, at:1, match:'one', activated:true}
+  t.pollStatus(); assert.deepEqual(t.statusProcess.command, ['protonvpn', 'status'], 'a live tunnel keeps details fresh')
+  const u = service(true); u.nm = {ok:false, at:1, match:'none'}
+  u.pollStatus(); assert.deepEqual(u.statusProcess.command, [], 'a failed nmcli read does not force the CLI')
+  const n = service(true); n.installed = false; n.panelOpen = true
+  n.pollStatus(); assert.deepEqual(n.statusProcess.command, [], 'never without protonvpn installed')
+  const r = service(true); r.refresh(); assert.deepEqual(r.statusProcess.command, ['protonvpn', 'status'], 'explicit refresh still reads the CLI')
+}
+{ // Disconnected state needs no fresh CLI observation.
+  const s = service(true); s.clock = 100000
+  s.storeNm({ok:true, match:'none', server:'', activated:false, wireGuard:'absent'}, 100000)
+  assert.equal(s.status.state, 'disconnected', 'stale CLI data cannot make a no-tunnel bar unknown')
+}
 console.log('proton service sign-in command and launch-failure tests passed')
