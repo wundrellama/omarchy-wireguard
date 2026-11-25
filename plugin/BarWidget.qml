@@ -619,7 +619,7 @@ Panel {
         Layout.fillWidth: true
         spacing: Style.space(1)
         Text { Layout.fillWidth: true; text: row.location ? (row.location.label || row.location.city) : ""; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: row.currentOrTarget; elide: Text.ElideRight }
-        Text { Layout.fillWidth: true; text: row.confirmingRemove ? "Delete this profile and its keys? Re-import the file to restore it." : "Internet exit" + (row.location && (row.location.city || row.location.country) ? " · " + [row.location.city, row.location.country].filter(function(v) { return !!v }).join(", ") : ""); textFormat: Text.PlainText; color: row.confirmingRemove ? root.errorColor : root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; wrapMode: row.confirmingRemove ? Text.WordWrap : Text.NoWrap; elide: row.confirmingRemove ? Text.ElideNone : Text.ElideRight }
+        Text { Layout.fillWidth: true; text: row.confirmingRemove ? "Delete " + (row.location.sourceName || "this profile") + " and its keys? Re-import the file to restore it." : "Internet exit" + (row.location && (row.location.city || row.location.country) ? " · " + [row.location.city, row.location.country].filter(function(v) { return !!v }).join(", ") : (row.location && row.location.sourceName ? " · " + row.location.sourceName : "")); textFormat: Text.PlainText; color: row.confirmingRemove ? root.errorColor : root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; wrapMode: row.confirmingRemove ? Text.WordWrap : Text.NoWrap; elide: row.confirmingRemove ? Text.ElideNone : Text.ElideRight }
       }
       Text {
         visible: !row.confirmingRemove
