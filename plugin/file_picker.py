@@ -38,6 +38,14 @@ def local_path(uri_result):
     return path
 
 
+def load_gio():
+    # gi.repository resolves typelibs lazily through an import hook, so the
+    # submodules must be imported; attribute access on the package fails.
+    gi = importlib.import_module("gi")
+    gi.require_version("Gio", "2.0")
+    return importlib.import_module("gi.repository.Gio"), importlib.import_module("gi.repository.GLib")
+
+
 def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--title", default="Select file")
@@ -49,10 +57,7 @@ def main():
         print("wireguard-file-picker: unknown option %s" % unknown[0], file=sys.stderr)
         return EXIT_CHOOSER_FAILED
 
-    gi = importlib.import_module("gi")
-    gi.require_version("Gio", "2.0")
-    repository = importlib.import_module("gi.repository")
-    Gio, GLib = repository.Gio, repository.GLib
+    Gio, GLib = load_gio()
 
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     loop = GLib.MainLoop()

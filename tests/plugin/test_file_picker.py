@@ -1,7 +1,10 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
+import types
 import unittest
+from unittest import mock
 
 HELPER = Path(__file__).resolve().parents[2] / "plugin" / "file_picker.py"
 
@@ -30,6 +33,21 @@ class FilePickerTest(unittest.TestCase):
                          ["/home/me/configs"])
         with self.assertRaises(ValueError):
             self.module.validate_paths(["/one", "/two"], True)
+
+    def test_gio_and_glib_load_as_lazy_submodules(self):
+        # PyGObject's gi.repository has no Gio/GLib attributes until the
+        # submodules are imported; the stub package mirrors that.
+        versions = []
+        gi = types.ModuleType("gi")
+        gi.require_version = lambda name, version: versions.append((name, version))
+        repository = types.ModuleType("gi.repository")
+        repository.__path__ = []
+        gio, glib = types.ModuleType("gi.repository.Gio"), types.ModuleType("gi.repository.GLib")
+        stubs = {"gi": gi, "gi.repository": repository,
+                 "gi.repository.Gio": gio, "gi.repository.GLib": glib}
+        with mock.patch.dict(sys.modules, stubs):
+            self.assertEqual(self.module.load_gio(), (gio, glib))
+        self.assertEqual(versions, [("Gio", "2.0")])
 
     def test_remote_file_uri_is_rejected(self):
         with self.assertRaises(ValueError):
