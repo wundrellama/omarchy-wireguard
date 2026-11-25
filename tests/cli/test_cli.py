@@ -37,6 +37,13 @@ class CliTests(unittest.TestCase):
         call = self.run_cli("connect", "Japan/Tokyo")
         call.assert_called_once_with("connect", {"city": "Japan/Tokyo"})
 
+    def test_remove_forwards_exact_profile(self):
+        call = self.run_cli("remove", "--profile", "stable-personal-id")
+        call.assert_called_once_with("remove", {"profile": "stable-personal-id"})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            cli.parser().parse_args(["remove"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_connect_requires_one_target(self):
         for arguments in (("connect",), ("connect", "Japan/Tokyo", "--profile", "one")):
             with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):

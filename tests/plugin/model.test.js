@@ -29,10 +29,14 @@ vm.runInContext(source, model)
 }
 
 {
-  const status = model.parseStatus('{"mode":"disabled","enabled":false,"backend_version":"0.2.0","protocol_version":2}')
+  const status = model.parseStatus('{"mode":"disabled","enabled":false,"backend_version":"0.2.0","protocol_version":3}')
   assert.equal(status.setupRequired, false)
   assert.equal(status.backendVersion, "0.2.0")
-  assert.equal(status.protocolVersion, 2)
+  assert.equal(status.protocolVersion, 3)
+  // A v2 backend cannot remove profiles; surface it for repair.
+  assert.equal(model.parseStatus('{"mode":"disabled","enabled":false,"protocol_version":2}').setupRequired, true)
+  // An empty catalog needs an import, not a backend repair.
+  assert.equal(model.mergeStatusCatalog(status, { ok: true, locations: [] }).setupRequired, false)
 }
 
 {

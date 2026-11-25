@@ -129,7 +129,7 @@ Each connection carries exactly one newline-terminated JSON request:
 
 Unknown fields, multiple requests, malformed payloads, and messages over 256
 KiB are rejected. Supported operations are `status`, `list`, `import`,
-`connect`, `disconnect`, `retry`, `pause`, and `diagnostics`. The daemon is
+`connect`, `disconnect`, `retry`, `pause`, `diagnostics`, and `remove`. The daemon is
 single-threaded and processes one request per connection. Between socket events
 it advances the state machine approximately every two seconds.
 
@@ -238,6 +238,12 @@ the exact endpoint over a physical interface.
 
 Managed-profile operations are scoped to the `omarchy-wireguard-` prefix. Other
 NetworkManager connections are not activated, deactivated, or deleted.
+
+`remove` deletes one cataloged profile. It refuses the current profile and any
+profile that enabled intent targets. It deletes the NetworkManager connection
+only when the catalog UUID still carries that entry's exact connection name, and
+it does so before the catalog write. A failed catalog write therefore stays
+retryable: the next attempt skips the absent UUID and only commits the catalog.
 
 ## DNS architecture
 

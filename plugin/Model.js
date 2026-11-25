@@ -89,7 +89,7 @@ function parseStatus(raw) {
   return {
     ok: true,
     installed: first(parsed, ["installed", "backend_installed", "backendInstalled"], true) !== false,
-    setupRequired: first(parsed, ["setup_required", "setupRequired"], false) === true || setup.required === true || protocolVersion < 2,
+    setupRequired: first(parsed, ["setup_required", "setupRequired"], false) === true || setup.required === true || protocolVersion < 3,
     backendVersion: text(first(parsed, ["backend_version", "backendVersion"], "")),
     protocolVersion: protocolVersion,
     enabled: enabled,
@@ -209,7 +209,8 @@ function mergeStatusCatalog(status, catalog) {
   for (var j = 0; j < next.locations.length; j++) {
     if (next.locations[j].current) { next.location = next.locations[j].kind === "profile" ? next.locations[j].label : next.locations[j].id; break }
   }
-  next.setupRequired = next.setupRequired === true || locations.length === 0
+  // An empty catalog needs an import, not a backend repair.
+  next.setupRequired = next.setupRequired === true
   return next
 }
 

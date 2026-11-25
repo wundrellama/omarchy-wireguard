@@ -468,6 +468,8 @@ def parser():
     target = connect.add_mutually_exclusive_group(required=True)
     target.add_argument("city", nargs="?", help="legacy country/city location")
     target.add_argument("--profile", help="exact stable profile ID from list")
+    remove = commands.add_parser("remove")
+    remove.add_argument("--profile", required=True, help="exact stable profile ID from list")
     pause = commands.add_parser("pause")
     pause.add_argument("seconds", nargs="?", type=int, default=600)
     import_command = commands.add_parser("import")
@@ -487,6 +489,8 @@ def main():
         elif arguments.command == "connect":
             target = {"profile": arguments.profile} if arguments.profile is not None else {"city": arguments.city}
             response = call("connect", target)
+        elif arguments.command == "remove":
+            response = call("remove", {"profile": arguments.profile})
         elif arguments.command == "pause":
             response = call("pause", {"seconds": arguments.seconds})
         elif arguments.command == "import":

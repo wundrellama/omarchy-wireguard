@@ -206,7 +206,7 @@ class ControllerTests(unittest.TestCase):
         result = self.controller.status({})
         self.assertEqual(result["mode"], "connected")
         self.assertEqual(result["backend_version"], "0.2.0")
-        self.assertEqual(result["protocol_version"], 2)
+        self.assertEqual(result["protocol_version"], 3)
         self.assertEqual(self.controller.mru, ["japan-tokyo-1"])
         self.assertTrue(self.store.values["state.json"]["enabled"])
         self.assertEqual(self.system.firewalls[-1].tunnel_interface, "wg0")

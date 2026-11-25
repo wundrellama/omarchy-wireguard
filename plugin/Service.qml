@@ -43,6 +43,8 @@ Item {
   // One transition at a time: {target, choice|location, label} awaiting inline confirmation.
   property var switchRequest: null
   property var switchTarget: null
+  // A profile {id, label} awaiting inline remove confirmation.
+  property var removeRequest: null
   property string switchPhase: ""
   property double switchStartedAt: 0
   property double wgReleasedAfter: 0
@@ -386,6 +388,27 @@ Item {
   function disconnect() { if (status.state !== "unknown" || disconnectRecovery || wireGuardRecovery) runAction("Disconnecting", ["disconnect"]) }
   function retry() { runAction("Retrying", ["retry"]) }
 
+  // The backend refuses the current or target profile; the panel only offers
+  // removal for other profiles, and only after an inline confirmation.
+  function requestRemove(location) {
+    if (!active || busy || status.state === "unknown" || !location || location.kind !== "profile" || !location.id) return
+    if (location.current || location.target) {
+      actionError = "Disconnect before removing this profile"
+      return
+    }
+    removeRequest = { id: String(location.id), label: String(location.label || location.id) }
+  }
+
+  function cancelRemove() { removeRequest = null }
+
+  function confirmRemove() {
+    var request = removeRequest
+    if (!active || !request || busy) return
+    removeRequest = null
+    actionError = ""
+    runAction("Removing profile", ["remove", "--profile=" + request.id])
+  }
+
 
   function chooseImport(directory) {
     if (!active || status.state === "unknown" || pickerProcess.running || busy) return
@@ -586,6 +609,16 @@ Item {
       status = next
       return
     }
+    if (value.removed === true) {
+      var removedId = String(value.profile || "")
+      catalog = {
+        ok: true,
+        locations: (catalog.locations || []).filter(function(item) { return !(item.kind === "profile" && item.id === removedId) }),
+        mru: (catalog.mru || []).filter(function(id) { return id !== removedId })
+      }
+      applyStatus(JSON.stringify(value.status || {}))
+      return
+    }
     if (value.imported === true) {
       var importedStatus = ({})
       for (var importedKey in status) importedStatus[importedKey] = status[importedKey]
@@ -635,6 +668,7 @@ Item {
     switchRequest = null
     switchTarget = null
     switchPhase = ""
+    removeRequest = null
   }
 
   Timer {

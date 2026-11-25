@@ -142,6 +142,7 @@ Panel {
   onOpenedChanged: {
     service.panelOpen = opened
     if (!opened && service.cancelSwitch) service.cancelSwitch()
+    if (!opened && service.cancelRemove) service.cancelRemove()
     if (opened) {
       cursorActive = false
       selectedIndex = 0
@@ -311,7 +312,7 @@ Panel {
           }
 
           Column {
-            visible: !root.statusKnown || !service.status.installed || service.status.setupRequired
+            visible: !root.statusKnown || !service.status.installed || service.status.setupRequired || (service.status.locations || []).length === 0
             width: parent.width
             spacing: Style.space(8)
             PanelSectionHeader { text: "GET STARTED"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -579,6 +580,8 @@ Panel {
     property int rowIndex: 0
     readonly property bool currentOrTarget: location && (location.current || location.target)
     readonly property bool disconnectAction: Model.shouldDisconnectLocation(location, service.status.state)
+    readonly property bool removable: !!location && location.kind === "profile" && !currentOrTarget
+    readonly property bool confirmingRemove: !!service.removeRequest && !!location && service.removeRequest.id === location.id
     enabled: root.statusKnown && !service.busy
     hasCursor: root.cursorActive && root.selectedIndex === rowIndex
     current: currentOrTarget
@@ -591,6 +594,7 @@ Panel {
       cursorShape: Qt.PointingHandCursor
       onEntered: { root.cursorActive = true; root.selectedIndex = row.rowIndex }
       onClicked: {
+        if (row.confirmingRemove) return
         if (row.disconnectAction) service.disconnect()
         else { service.connectLocation(row.location); root.close() }
       }
@@ -615,14 +619,18 @@ Panel {
         Layout.fillWidth: true
         spacing: Style.space(1)
         Text { Layout.fillWidth: true; text: row.location ? (row.location.label || row.location.city) : ""; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: row.currentOrTarget; elide: Text.ElideRight }
-        Text { Layout.fillWidth: true; text: "Internet exit" + (row.location && (row.location.city || row.location.country) ? " · " + [row.location.city, row.location.country].filter(function(v) { return !!v }).join(", ") : ""); textFormat: Text.PlainText; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+        Text { Layout.fillWidth: true; text: row.confirmingRemove ? "Delete this profile and its keys? Re-import the file to restore it." : "Internet exit" + (row.location && (row.location.city || row.location.country) ? " · " + [row.location.city, row.location.country].filter(function(v) { return !!v }).join(", ") : ""); textFormat: Text.PlainText; color: row.confirmingRemove ? root.errorColor : root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; wrapMode: row.confirmingRemove ? Text.WordWrap : Text.NoWrap; elide: row.confirmingRemove ? Text.ElideNone : Text.ElideRight }
       }
       Text {
+        visible: !row.confirmingRemove
         text: !root.statusKnown ? "Unknown" : (row.disconnectAction ? "Disconnect" : (row.location && row.location.target && service.status.state === "connecting" ? "Connecting" : "Connect"))
         color: row.disconnectAction && service.status.state === "failed" ? root.errorColor : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
       }
+      Button { visible: row.removable && !row.confirmingRemove; focusable: true; iconText: String.fromCodePoint(0xF0A7A); tooltipText: "Remove profile"; foreground: root.dim; fontFamily: root.fontFamily; onClicked: service.requestRemove(row.location) }
+      Button { visible: row.confirmingRemove; focusable: true; text: "Remove"; foreground: root.errorColor; fontFamily: root.fontFamily; onClicked: service.confirmRemove() }
+      Button { visible: row.confirmingRemove; focusable: true; text: "Cancel"; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: service.cancelRemove() }
     }
   }
 

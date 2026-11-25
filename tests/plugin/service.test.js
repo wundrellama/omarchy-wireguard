@@ -7,7 +7,7 @@ const Model = {}; vm.createContext(Model); vm.runInContext(fs.readFileSync(path.
 const Proton = {}; vm.createContext(Proton); vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugin/Proton.js'),'utf8'), Proton)
 // Exercise production function bodies; QML runtime imports are tested separately.
 function service() {
-  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null, pendingConnection:null, lastConnection:null, wireGuardObservationAfter:0,
+  const s = { Model, Proton, Date, active:false, switchPhase:'', switchRequest:null, switchTarget:null, removeRequest:null, pendingConnection:null, lastConnection:null, wireGuardObservationAfter:0,
     Qt:{callLater(){}}, protonService:{status:{state:'absent',installed:false}}, status:Model.unknownStatus(), catalog:{locations:[]},
     disconnectRecovery:false, wireGuardRecovery:false, statusRevision:0, lastStatusAt:0, closedRefreshIntervalSec:30, busy:false, panelOpen:false,
     lastError:'', actionError:'', pendingAction:'', actionMessage:'', refreshing:false,
@@ -85,4 +85,25 @@ outage.applyStatus('{"mode":"connected","enabled":true}'); assert.equal(outage.s
 clock+=30000; outage.statusCommandFailed('down'); assert.equal(notices.length,0)
 clock+=30000; outage.statusCommandFailed('down'); assert.deepEqual(notices,[['WireGuard status failed','down']])
 clock+=30000; outage.statusCommandFailed('down'); assert.equal(notices.length,1)
+// Profile removal: inline confirmation, exact argv, then a local catalog update.
+const removal=service(); removal.active=true
+removal.applyStatus('{"mode":"connected","enabled":true,"protocol_version":3,"current_profile":"live"}')
+removal.requestRemove({id:'live',kind:'profile',current:true,label:'Live'})
+assert.equal(removal.removeRequest,null); assert.match(removal.actionError,/Disconnect/)
+removal.requestRemove({id:'Japan/Tokyo',kind:'city'}); assert.equal(removal.removeRequest,null)
+removal.requestRemove({id:'home-1',kind:'profile',label:'Home'})
+assert.deepEqual(removal.removeRequest,{id:'home-1',label:'Home'})
+assert.equal(removal.actionProcess.running,false,'a request alone runs nothing')
+removal.cancelRemove(); assert.equal(removal.removeRequest,null)
+removal.confirmRemove(); assert.equal(removal.actionProcess.running,false,'nothing to confirm')
+removal.requestRemove({id:'home-1',kind:'profile',label:'Home'}); removal.confirmRemove()
+assert.deepEqual(removal.actionProcess.command,['omarchy-wireguard','remove','--profile=home-1'])
+assert.equal(removal.removeRequest,null)
+removal.actionProcess.running=false
+removal.catalog={ok:true,mru:['home-1','live'],locations:[{id:'home-1',kind:'profile',label:'Home',profileIds:['home-1']},{id:'live',kind:'profile',label:'Live',profileIds:['live']}]}
+removal.applyActionOutput(JSON.stringify({ok:true,result:{removed:true,profile:'home-1',status:{mode:'connected',enabled:true,protocol_version:3,current_profile:'live'}}}))
+assert.deepEqual(removal.catalog.locations.map(item=>item.id),['live'])
+assert.deepEqual(removal.catalog.mru,['live'])
+assert.equal(removal.status.state,'connected')
+assert.deepEqual(Array.from(removal.status.locations,item=>item.id),['live'])
 console.log('service tests passed')

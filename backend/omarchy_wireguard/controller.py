@@ -156,7 +156,7 @@ class Controller:
         handlers = {
             "status": self.status, "list": self.list_profiles, "import": self.import_profiles,
             "connect": self.connect, "disconnect": self.disconnect, "retry": self.retry,
-            "pause": self.pause, "diagnostics": self.diagnostics,
+            "pause": self.pause, "diagnostics": self.diagnostics, "remove": self.remove_profile,
         }
         try:
             if source_fd is not None and operation != "import":
@@ -273,6 +273,49 @@ class Controller:
         return {"imported": True, "profiles": len(imported),
                 "cities": sorted({item["city_key"] for item in imported}),
                 "status": self.status({})}
+
+    def remove_profile(self, args: dict) -> dict:
+        if set(args) != {"profile"} or not isinstance(args["profile"], str) or not args["profile"]:
+            raise RequestFailure("remove requires exactly one profile string")
+        identifier = args["profile"]
+        profile = next((item for item in self.catalog if item["id"] == identifier), None)
+        if profile is None:
+            raise RequestFailure("unknown profile")
+        if self._profile_in_use(profile):
+            raise RequestFailure("cannot remove the current or target profile; disconnect first")
+        # Delete NetworkManager state first so a failed catalog write stays
+        # retryable: an absent UUID is skipped on the next attempt. Never delete
+        # a UUID whose connection name no longer matches this catalog entry.
+        managed = self.system.managed_profiles()
+        if profile["uuid"] in managed:
+            if managed[profile["uuid"]] != PROFILE_PREFIX + identifier:
+                raise RequestFailure("NetworkManager profile identity does not match the catalog")
+            try:
+                self.system.delete_profile(profile["uuid"])
+            except SystemFailure as exc:
+                raise RequestFailure("could not delete the NetworkManager profile") from exc
+        catalog = [item for item in self.catalog if item["id"] != identifier]
+        mru = [item for item in self.mru if item != identifier]
+        # StateCommitError means the rename landed; only durability is unconfirmed.
+        try:
+            self.store.write("profiles.json", catalog)
+        except StateCommitError:
+            pass
+        except OSError as exc:
+            raise RequestFailure("NetworkManager profile deleted but the catalog could not be saved; retry remove") from exc
+        self.catalog, self.mru = catalog, mru
+        try:
+            self._persist()
+        except StateCommitError:
+            pass
+        except OSError as exc:
+            raise RequestFailure("profile removed but its connection history could not be saved") from exc
+        return {"removed": True, "profile": identifier, "status": self.status({})}
+
+    def _profile_in_use(self, profile: dict) -> bool:
+        if self.current and self.current["id"] == profile["id"]:
+            return True
+        return self.enabled and self.target in ("profile:" + profile["id"], profile["city_key"])
 
     def connect(self, args: dict) -> dict:
         if set(args) not in ({"city"}, {"profile"}):

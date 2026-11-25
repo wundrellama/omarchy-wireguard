@@ -112,11 +112,14 @@ Import a full-tunnel profile with a display name instead of assigning it a count
 omarchy-wireguard import ~/Downloads/personal.conf --label 'Personal exit'
 omarchy-wireguard list
 omarchy-wireguard connect --profile '<id-from-list>'
+omarchy-wireguard remove --profile '<id-from-list>'
 ```
 
 For a directory or ZIP, `--labels '{"personal.conf":"Personal exit"}'` maps exact source names (including archive-relative directories) to labels. Labels must be nonempty printable text of at most 128 characters. They do not relax the full-tunnel configuration requirements.
 
-Imports add to the catalog; they never replace old profiles. Duplicate source names are rejected, and duplicate basenames in a multi-file CLI import must be renamed explicitly. Profile replacement, update and removal are not implemented in this slice. Existing connections and IDs survive an import. CLI imports no longer discover `alfred-vpn` or overwrite saved network policy.
+Imports add to the catalog; they never replace old profiles. Duplicate source names are rejected, and duplicate basenames in a multi-file CLI import must be renamed explicitly. Profile replacement and update are not implemented. Existing connections and IDs survive an import. CLI imports no longer discover `alfred-vpn` or overwrite saved network policy.
+
+`remove --profile` (or the trash button on a panel row, after an inline confirmation) deletes one profile's NetworkManager connection, including its keys, and drops it from the catalog and connection history. The backend refuses the current or target profile; disconnect first. Re-import the source file to restore a removed profile.
 
 The panel lists named profiles without requiring location data. It searches labels, source names, cities, and countries. It connects the exact selected ID. Ambiguous imports request display labels and add profiles without replacing existing profiles. Missing, stale, or contradictory WireGuard status appears as unknown. An operational Proton connection with incomplete evidence appears as unverified. Timed pause and private or split tunnels remain unsupported. The panel supports Proton VPN when its official CLI is installed. It coordinates VPN transitions but does not enable the Proton kill switch.
 

@@ -14,7 +14,7 @@ class ProtocolError(ValueError):
 
 
 OPERATIONS = frozenset(
-    {"status", "list", "import", "connect", "disconnect", "retry", "pause", "diagnostics"}
+    {"status", "list", "import", "connect", "disconnect", "retry", "pause", "diagnostics", "remove"}
 )
 
 

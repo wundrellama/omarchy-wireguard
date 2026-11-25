@@ -33,6 +33,17 @@ class ProtocolTests(unittest.TestCase):
             left.close()
             right.close()
 
+    def test_remove_is_a_plain_request(self):
+        left, right = socket.socketpair()
+        try:
+            right.sendall(json.dumps({"op": "remove", "args": {"profile": "home-1"}}).encode() + b"\n")
+            request, source_fd = read_request(left)
+            self.assertEqual(request["args"], {"profile": "home-1"})
+            self.assertIsNone(source_fd)
+        finally:
+            left.close()
+            right.close()
+
     def test_rejects_unknown_fields_and_multiple_requests(self):
         for payload in (b'{"op":"status","extra":1}\n', b'{"op":"status"}\n{}\n'):
             left, right = socket.socketpair()

@@ -87,3 +87,13 @@ assert.match(panel, /text: root.stateGlyph\s+color: root.stateColor/)
 assert.match(panel, /text: String\(modelData\)[\s\S]{0,180}textFormat: Text\.PlainText/)
 assert.match(panel, /text: service\.status\.importReview\.message[\s\S]{0,220}textFormat: Text\.PlainText/)
 assert.match(panel, /Text \{ width: parent\.width; text: sourceName; textFormat: Text\.PlainText;/)
+// Profile rows offer removal only for non-current profiles, behind an inline confirmation.
+const removable = panel.match(/readonly property bool removable: ([^\n]+)/)[1]
+for (const [location, expected] of [[{kind:'profile'},true],[{kind:'profile',current:true},false],[{kind:'profile',target:true},false],[{kind:'city'},false],[null,false]]) {
+  const currentOrTarget = !!location && !!(location.current || location.target)
+  assert.equal(new Function('location','currentOrTarget','return '+removable)(location,currentOrTarget),expected)
+}
+assert.match(panel, /visible: row\.removable && !row\.confirmingRemove;[^\n]+onClicked: service\.requestRemove\(row\.location\)/)
+assert.match(panel, /visible: row\.confirmingRemove;[^\n]+text: "Remove";[^\n]+onClicked: service\.confirmRemove\(\)/)
+assert.match(panel, /onClicked: \{\s+if \(row\.confirmingRemove\) return/)
+assert.match(panel, /if \(!opened && service\.cancelRemove\) service\.cancelRemove\(\)/)
